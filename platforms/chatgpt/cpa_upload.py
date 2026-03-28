@@ -50,10 +50,14 @@ def generate_token_json(account) -> dict:
 
     expired_str = ""
     account_id = ""
+    chatgpt_account_id = ""
+    chatgpt_user_id = ""
     if access_token:
         payload = _decode_jwt_payload(access_token)
         auth_info = payload.get("https://api.openai.com/auth", {})
         account_id = auth_info.get("chatgpt_account_id", "")
+        chatgpt_account_id = auth_info.get("chatgpt_account_id", "")
+        chatgpt_user_id = auth_info.get("chatgpt_user_id", "") or auth_info.get("user_id", "")
         exp_timestamp = payload.get("exp")
         if isinstance(exp_timestamp, int) and exp_timestamp > 0:
             exp_dt = datetime.fromtimestamp(
@@ -67,6 +71,8 @@ def generate_token_json(account) -> dict:
         "expired": expired_str,
         "id_token": id_token,
         "account_id": account_id,
+        "chatgpt_account_id": chatgpt_account_id,
+        "chatgpt_user_id": chatgpt_user_id,
         "access_token": access_token,
         "last_refresh": now.strftime("%Y-%m-%dT%H:%M:%S+08:00"),
         "refresh_token": refresh_token,
