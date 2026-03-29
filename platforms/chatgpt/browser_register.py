@@ -86,6 +86,78 @@ def _wait_for_access_token(page, timeout: int = 60) -> str:
     return ""
 
 
+def _overwrite_focused_value(page, value: str) -> None:
+    for shortcut in ("Control+A", "Meta+A"):
+        try:
+            page.keyboard.press(shortcut)
+        except Exception:
+            pass
+    try:
+        page.keyboard.press("Backspace")
+    except Exception:
+        pass
+    page.keyboard.type(value)
+
+
+def _fill_profile(page, log_fn: Callable[[str], None]) -> None:
+    import random
+    from datetime import datetime
+
+    FIRST_NAMES = [
+        "James", "John", "Robert", "Michael", "William", "David", "Emma", "Olivia", "Ava", "Isabella",
+        "Sophia", "Mia", "Charlotte", "Amelia", "Harper", "Evelyn", "Liam", "Noah", "Ethan", "Lucas",
+    ]
+    name = random.choice(FIRST_NAMES)
+    current_year = datetime.now().year
+    birth_year = random.randint(current_year - 45, current_year - 20)
+    birth_month = random.randint(1, 12)
+    birth_day = random.randint(1, 28)
+    birthdate = f"{birth_year}-{birth_month:02d}-{birth_day:02d}"
+    year, month, day = birthdate.split("-")
+    age = current_year - int(year)
+
+    name_sel = 'input[name="name"]'
+    if page.query_selector(name_sel):
+        page.fill(name_sel, f"{name} User")
+
+    date_filled = False
+    for attempt in range(3):
+        try:
+            year_input = page.query_selector('[data-type="year"][contenteditable="true"]')
+            month_input = page.query_selector('[data-type="month"][contenteditable="true"]')
+            day_input = page.query_selector('[data-type="day"][contenteditable="true"]')
+            if year_input and month_input and day_input:
+                year_input.click()
+                _overwrite_focused_value(page, year)
+                month_input.click()
+                _overwrite_focused_value(page, month.zfill(2))
+                day_input.click()
+                _overwrite_focused_value(page, day.zfill(2))
+                date_filled = True
+                log_fn(f"filled birthday: {birthdate} (attempt {attempt+1})")
+                break
+        except Exception as e:
+            if attempt < 2:
+                log_fn(f"birthday fill attempt {attempt+1} failed: {e}")
+                time.sleep(0.5)
+
+    if not date_filled:
+        for attempt in range(3):
+            try:
+                age_input = page.query_selector('[name="age"]')
+                if age_input:
+                    age_input.fill(str(age))
+                    log_fn(f"filled age: {age}")
+                    break
+            except Exception:
+                if attempt < 2:
+                    time.sleep(0.5)
+
+    submit_btn = 'button[type="submit"], button:has-text("Finish")'
+    if page.query_selector(submit_btn):
+        page.click(submit_btn)
+
+
 class ChatGPTBrowserRegister:
     def __init__(
         self,
@@ -149,18 +221,27 @@ class ChatGPTBrowserRegister:
             time.sleep(2)
             self.log(f"当前页面: {page.url}")
 
-            if "auth.openai.com" not in page.url:
-                clicked = _click_first(page, entry_selectors, timeout=8)
-                if clicked:
-                    self.log(f"已点击注册入口: {clicked}")
-                    time.sleep(3)
-                else:
-                    self.log("未在入口页找到 Sign up，继续等待统一认证页跳转")
+            # 循环点击登录按钮，直到跳转到 auth.openai.com
+            login_entry_selectors = [
+                'button[data-testid="login-button"]',
+                'a[data-testid="login-button"]',
+                'button:has-text("Log in")',
+                'a:has-text("Log in")',
+            ]
+            max_retries = 5
+            for i in range(max_retries):
+                if "auth.openai.com" in page.url:
+                    self.log(f"[{i+1}] ✓ 已跳转到 auth.openai.com: {page.url}")
+                    break
 
-            if "auth.openai.com" not in page.url and not _wait_for_url(page, "auth.openai.com", timeout=20):
-                self.log(f"未检测到 auth.openai.com 跳转，继续尝试当前页表单: {page.url}")
+                self.log(f"[{i+1}/{max_retries}] 点击登录按钮...")
+                login_clicked = _click_first(page, login_entry_selectors, timeout=3)
+                if login_clicked:
+                    self.log(f"[{i+1}] ✓ 点击成功：{login_clicked}")
+
+                time.sleep(2)
             else:
-                self.log(f"已进入统一认证页: {page.url}")
+                self.log(f"达到最大重试次数 {max_retries}，当前 URL: {page.url}")
 
             # Fill email
             email_sel = _wait_for_any_selector(page, email_selectors, timeout=25)
@@ -222,26 +303,7 @@ class ChatGPTBrowserRegister:
                     break
                 if page.query_selector('input[name="name"]'):
                     self.log("检测到关于您页面，填写姓名和生日")
-                    import random, string
-                    first = ''.join(random.choices(string.ascii_lowercase, k=6)).capitalize()
-                    last = ''.join(random.choices(string.ascii_lowercase, k=6)).capitalize()
-                    page.fill('input[name="name"]', f"{first} {last}")
-                    
-                    # Fill birthday (React Aria DateField)
-                    if page.query_selector('div[data-type="month"]'):
-                        page.click('div[data-type="month"]', force=True)
-                        page.keyboard.type("01")
-                        time.sleep(0.5)
-                        page.click('div[data-type="day"]', force=True)
-                        page.keyboard.type("01")
-                        time.sleep(0.5)
-                        page.click('div[data-type="year"]', force=True)
-                        page.keyboard.type("1990")
-                    
-                    time.sleep(1)
-                    submit_btn = 'button[type="submit"], button:has-text("Finish")'
-                    if page.query_selector(submit_btn):
-                        page.click(submit_btn)
+                    _fill_profile(page, self.log)
                     time.sleep(5)
                     break
                 time.sleep(1)
