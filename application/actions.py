@@ -31,6 +31,9 @@ class ActionsService:
                 for action in actions
             ]
         }
+    
+    def list_capabilities(self, platform: str) -> list[str]:
+        return self.runtime.list_capabilities(platform)
 
     def _is_sync_action(self, platform: str, action_id: str) -> bool:
         actions = self.runtime.list_actions(platform)

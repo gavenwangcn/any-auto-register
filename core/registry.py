@@ -9,7 +9,7 @@ from .db import PlatformCapabilityOverrideModel, engine
 
 _registry: Dict[str, Type[BasePlatform]] = {}
 
-_CAPABILITY_KEYS = ("supported_executors", "supported_identity_modes", "supported_oauth_providers")
+_CAPABILITY_KEYS = ("supported_executors", "supported_identity_modes", "supported_oauth_providers", "capabilities")
 
 
 def _utcnow() -> datetime:
@@ -44,6 +44,7 @@ def _class_defaults(cls: Type[BasePlatform]) -> dict[str, list[str]]:
         "supported_executors": list(getattr(cls, "supported_executors", [])),
         "supported_identity_modes": list(getattr(cls, "supported_identity_modes", [])),
         "supported_oauth_providers": list(getattr(cls, "supported_oauth_providers", [])),
+        "capabilities": list(getattr(cls, "capabilities", [])),
     }
 
 

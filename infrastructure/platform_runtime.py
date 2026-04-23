@@ -43,7 +43,7 @@ PERSISTED_ACTION_DATA_KEYS = {
     "authToken",
 }
 
-STATEFUL_ACTION_IDS = {"get_account_state", "switch_account"}
+STATEFUL_ACTION_IDS = {"get_account_state", "switch_account", "query_state", "switch_desktop"}
 CASHIER_URL_ACTION_IDS = {
     "payment_link",
     "payment_link_browser",
@@ -51,6 +51,8 @@ CASHIER_URL_ACTION_IDS = {
     "generate_trial_link_browser",
     "get_cashier_url",
     "generate_checkout_link",
+    "generate_link",
+    "generate_link_browser",
 }
 
 
@@ -259,6 +261,13 @@ class PlatformRuntime:
                 )
             )
         return actions
+    
+    def list_capabilities(self, platform: str) -> list[str]:
+        """List platform's declared capabilities."""
+        load_all()
+        platform_cls = get(platform)
+        instance = platform_cls(config=RegisterConfig())
+        return instance.get_platform_capabilities()
 
     def get_desktop_state(self, platform: str) -> dict[str, Any]:
         load_all()
