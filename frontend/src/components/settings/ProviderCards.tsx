@@ -279,6 +279,16 @@ function EditModal({
                     <select value={form[field.key] || ''} onChange={e => setForm(f => ({ ...f, [field.key]: e.target.value }))} className="control-surface appearance-none">
                       {field.options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
                     </select>
+                  ) : field.type === 'textarea' ? (
+                    <textarea
+                      value={form[field.key] || ''}
+                      onChange={e => setForm(f => ({ ...f, [field.key]: e.target.value }))}
+                      placeholder={field.placeholder || ''}
+                      className="control-surface min-h-32 font-mono text-xs"
+                      autoComplete="off"
+                      data-1p-ignore
+                      data-lpignore="true"
+                    />
                   ) : (
                     <>
                       <input type={field.secret && !showSecret[sk] ? 'password' : 'text'} value={form[field.key] || ''}

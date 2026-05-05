@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { API } from '@/lib/utils'
+import { apiFetch } from '@/lib/utils'
 import { Sparkles, X } from 'lucide-react'
 
 const DISMISS_KEY = 'update-banner-dismissed-tag'
@@ -18,9 +18,7 @@ export default function UpdateBanner() {
     let cancelled = false
     const fetchVersion = async () => {
       try {
-        const resp = await fetch(API + '/system/version')
-        if (!resp.ok) return
-        const data: VersionResp = await resp.json()
+        const data: VersionResp = await apiFetch('/system/version')
         if (cancelled) return
         const dismissedTag = localStorage.getItem(DISMISS_KEY) || ''
         if (data.has_update && data.latest && data.latest.tag === dismissedTag) {

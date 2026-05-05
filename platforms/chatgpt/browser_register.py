@@ -2087,8 +2087,14 @@ def _handle_add_phone_challenge(
         except RuntimeError as exc:
             last_error = exc
             error_msg = str(exc)
-            # 只有"未获取到短信验证码"才换号重试，其他错误直接抛出
-            if "未获取到短信验证码" not in error_msg:
+            # 验证码超时或号码已被使用时换号重试，其他错误直接抛出
+            should_retry = (
+                "未获取到短信验证码" in error_msg
+                or "phone_number_in_use" in error_msg
+                or "already" in error_msg.lower()
+                or "in use" in error_msg.lower()
+            )
+            if not should_retry:
                 raise
             log(f"⚠️ 验证码超时未收到，准备换号重试...")
             # 取消当前号码
@@ -2891,6 +2897,13 @@ def _submit_otp_via_page(page, code: str, log) -> dict:
     if not otp:
         return {"ok": False, "status": 400, "url": page.url, "data": None, "text": "验证码为空"}
 
+    # 等待页面加载完成，确保 OTP 输入框已渲染
+    try:
+        page.wait_for_load_state("domcontentloaded", timeout=5000)
+    except Exception:
+        pass
+    time.sleep(1)
+
     filled = False
 
     # 先尝试 6 格 OTP 输入框
@@ -2939,6 +2952,29 @@ def _submit_otp_via_page(page, code: str, log) -> dict:
                     filled = True
                     log("验证码页已填写单输入框")
                     break
+            except Exception:
+                continue
+
+    if not filled:
+        # 再等 3 秒重试一次（页面可能还在渲染）
+        time.sleep(3)
+        otp_retry_selectors = [
+            "input[inputmode='numeric']",
+            "input[autocomplete='one-time-code']",
+            "input[name*='code' i]",
+            "input[type='text']",
+        ]
+        for sel in otp_retry_selectors:
+            try:
+                target = page.locator(sel).first
+                if target.is_visible(timeout=2000):
+                    target.click(timeout=1500)
+                    target.fill("")
+                    target.type(otp, delay=random.randint(18, 45))
+                    if str(target.input_value() or "").strip():
+                        filled = True
+                        log("验证码页已填写单输入框(重试)")
+                        break
             except Exception:
                 continue
 
@@ -3832,43 +3868,11 @@ class ChatGPTBrowserRegister:
             cookies_dict = _get_cookies(page)
 
             # ═══ 通过 Codex CLI OAuth 获取正确的 token ═══
-            # 用干净的浏览器上下文做 OAuth（注册时的 cookie 会干扰 OAuth 流程）
+            # 注册完成后的浏览器上下文 session 状态不稳定（NS_BINDING_ABORTED），
+            # 直接用全新浏览器做 OAuth 更可靠
             self.log("执行 Codex CLI OAuth 流程获取 token...")
-            try:
-                page.context.clear_cookies()
-            except Exception:
-                pass
-            codex_result = _do_codex_oauth(
-                page,
-                cookies_dict,
-                email,
-                password,
-                self.otp_callback,
-                self.phone_callback,
-                self.proxy,
-                self.log,
-            )
-            cookies_dict = _get_cookies(page)
-            session_token = cookies_dict.get("__Secure-next-auth.session-token", "")
-            cookie_str = "; ".join([f"{k}={v}" for k, v in cookies_dict.items()])
 
-            if codex_result:
-                self.log(f"Codex OAuth 成功: account_id={codex_result.get('account_id','')}")
-                self.log(f"注册成功: {email}")
-                return {
-                    "email": email, "password": password,
-                    "account_id": codex_result.get("account_id", ""),
-                    "access_token": codex_result.get("access_token", ""),
-                    "refresh_token": codex_result.get("refresh_token", ""),
-                    "id_token": codex_result.get("id_token", ""),
-                    "session_token": session_token,
-                    "workspace_id": "", "cookies": cookie_str,
-                    "profile": {},
-                }
-
-            self.log("Codex OAuth 失败，尝试全新浏览器重试...")
-
-        # 全新浏览器 OAuth 重试（在 with Camoufox 外面开新的）
+        # 直接用全新浏览器做 OAuth（注册后的浏览器上下文不可靠）
         codex_result = self._retry_oauth_fresh_browser(email, password)
         if codex_result:
             self.log(f"全新浏览器 OAuth 成功: account_id={codex_result.get('account_id','')}")

@@ -19,7 +19,7 @@ from typing import Any, Callable
 from curl_cffi import requests as curl_requests
 
 BLINK_BASE = "https://blink.new"
-FIREBASE_API_KEY = "AIzaSyDW_pdI4eFUtrtmrwRG0a2dvMAgBsLq_hU"
+FIREBASE_API_KEY = "test"
 FIREBASE_SIGNIN_URL = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithCustomToken?key={FIREBASE_API_KEY}"
 FIREBASE_REFRESH_URL = f"https://securetoken.googleapis.com/v1/token?key={FIREBASE_API_KEY}"
 FIREBASE_CLIENT_VERSION = "Chrome/JsCore/11.10.0/FirebaseCore-web"

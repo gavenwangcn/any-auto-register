@@ -97,6 +97,14 @@ def _test_mailbox(driver_type: str, extra: dict, definition) -> dict:
         else:
             mailbox = factory(extra, None)
 
+        if hasattr(mailbox, "peek_email"):
+            email = mailbox.peek_email()
+            return {
+                "ok": True,
+                "message": f"测试成功！可用邮箱: {email}",
+                "email": email,
+            }
+
         account = mailbox.get_email()
         return {
             "ok": True,

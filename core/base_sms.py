@@ -535,23 +535,11 @@ class HeroSmsProvider(BaseSmsProvider):
         Returns:
             最优国家 ID 字符串，或 None（无可用国家）
         """
-        # HeroSMS 中已验证对 OpenAI 走 SMS（非 WhatsApp）的国家白名单
-        # OpenAI 2025年起对大量国家改用 WhatsApp 验证，HeroSMS 无法接收 WhatsApp
-        # 以下国家经测试确认走 SMS：
+        # HeroSMS/SMSBower 中已验证对 OpenAI 走 SMS（非 WhatsApp）的国家白名单
+        # OpenAI 2025年起对绝大多数国家改用 WhatsApp 验证
+        # 目前只有泰国确认走 SMS
         ALLOWED_COUNTRIES = {
-            "32",   # Romania
-            "33",   # Colombia
-            "39",   # Argentina
             "52",   # Thailand (已验证走SMS)
-            "54",   # Mexico
-            "56",   # Spain
-            "62",   # Turkey
-            "63",   # Czech
-            "84",   # Hungary
-            "85",   # Moldova
-            "117",  # Portugal
-            "148",  # Armenia
-            "151",  # Chile
         }
 
         try:
@@ -668,12 +656,12 @@ class HeroSmsProvider(BaseSmsProvider):
             actual_cost = service_prices.get("cost") or service_prices.get("price")
             if actual_cost is not None:
                 actual_cost = float(actual_cost)
-                # 用实际价格的 2 倍作为 maxPrice，确保能拿到物理号码
-                dynamic_max = round(actual_cost * 2, 4)
+                # 用实际价格的 3 倍作为 maxPrice（留足余量），但不超过用户配置的上限
+                dynamic_max = round(actual_cost * 3, 4)
                 if self.max_price > 0:
-                    effective_max_price = min(self.max_price, max(dynamic_max, actual_cost + 0.05))
+                    effective_max_price = min(self.max_price, max(dynamic_max, 0.2))
                 else:
-                    effective_max_price = max(dynamic_max, 0.15)
+                    effective_max_price = max(dynamic_max, 0.2)
         except Exception:
             pass  # 查询失败就用默认值
 
@@ -691,6 +679,22 @@ class HeroSmsProvider(BaseSmsProvider):
             v2_error = resp.text.strip()[:200]
         except Exception as exc:
             v2_error = str(exc)
+
+        # 如果 NO_NUMBERS 且 maxPrice 低于用户配置的上限，提高 maxPrice 重试
+        if "NO_NUMBERS" in v2_error and self.max_price > 0 and effective_max_price < self.max_price:
+            common["maxPrice"] = self.max_price
+            try:
+                resp = self._request({"action": "getNumberV2", **common})
+                try:
+                    data = resp.json()
+                except ValueError:
+                    data = None
+                if isinstance(data, dict) and data.get("activationId"):
+                    return data
+                v2_error = resp.text.strip()[:200]
+            except Exception as exc:
+                v2_error = str(exc)
+
         try:
             text = self._request({"action": "getNumber", **common}).text.strip()
             if text.startswith("ACCESS_NUMBER:"):

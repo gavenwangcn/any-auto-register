@@ -9,7 +9,6 @@ import { Save, RefreshCw, CheckCircle, ExternalLink, Sparkles } from 'lucide-rea
 import Settings from '@/pages/Settings'
 import Proxies from '@/pages/Proxies'
 import AdvancedSettings from '@/components/settings/AdvancedSettings'
-import { API } from '@/lib/utils'
 
 /* ------------------------------------------------------------------ */
 /*  Tab definitions                                                    */
@@ -240,18 +239,18 @@ type VersionResp = {
 function AboutTab() {
   const [info, setInfo] = useState<VersionResp | null>(null)
   const [checking, setChecking] = useState(false)
+  const formatVersion = (value: string) => {
+    const version = String(value || '').trim()
+    if (!version || version === '?') return '未知'
+    return version.startsWith('v') ? version : `v${version}`
+  }
 
   const fetchVersion = async () => {
     setChecking(true)
     try {
-      const resp = await fetch(API + '/system/version')
-      if (resp.ok) {
-        setInfo(await resp.json())
-      } else {
-        setInfo({ current: '?', latest: null, has_update: false })
-      }
+      setInfo(await apiFetch('/system/version'))
     } catch {
-      setInfo({ current: '?', latest: null, has_update: false })
+      setInfo({ current: '', latest: null, has_update: false })
     } finally {
       setChecking(false)
     }
@@ -269,7 +268,7 @@ function AboutTab() {
             <div>
               <div className="text-sm text-[var(--text-muted)]">当前版本</div>
               <div className="mt-0.5 text-xl font-bold tracking-tight text-[var(--text-primary)]">
-                {info ? `v${info.current}` : checking ? '加载中...' : '—'}
+                {info ? formatVersion(info.current) : checking ? '加载中...' : '—'}
               </div>
             </div>
             <div className="flex items-center gap-2">

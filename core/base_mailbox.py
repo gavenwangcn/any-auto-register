@@ -229,6 +229,19 @@ def _create_testmail(extra: dict, proxy: str | None) -> 'BaseMailbox':
     )
 
 
+def _create_local_ms_pool(extra: dict, proxy: str | None) -> 'BaseMailbox':
+    from core.local_ms_mailbox import LocalMicrosoftMailboxPool
+
+    return LocalMicrosoftMailboxPool(
+        pool_text=extra.get("local_ms_pool_text", ""),
+        pool_file=extra.get("local_ms_pool_file", ""),
+        state_file=extra.get("local_ms_pool_state_file", ""),
+        graph_scope=extra.get("local_ms_graph_scope", ""),
+        allow_reuse=str(extra.get("local_ms_pool_allow_reuse", "")).strip().lower() in {"1", "true", "yes", "on"},
+        proxy=proxy,
+    )
+
+
 def _create_laoudo(extra: dict, proxy: str | None) -> 'BaseMailbox':
     return LaoudoMailbox(
         auth_token=extra.get("laoudo_auth", ""),
@@ -257,6 +270,7 @@ MAILBOX_FACTORY_REGISTRY = {
     "moemail_api": _create_moemail,
     "cfworker_admin_api": _create_cfworker,
     "testmail_api": _create_testmail,
+    "local_ms_pool": _create_local_ms_pool,
     "laoudo_api": _create_laoudo,
     # backward-compat fallback
     "generic_http": _create_generic_http,
@@ -267,6 +281,7 @@ MAILBOX_FACTORY_REGISTRY = {
     "moemail": _create_moemail,
     "cfworker": _create_cfworker,
     "testmail": _create_testmail,
+    "local_ms": _create_local_ms_pool,
     "laoudo": _create_laoudo,
 }
 
