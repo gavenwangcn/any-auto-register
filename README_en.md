@@ -2,24 +2,31 @@
 
 # Any Auto Register
 
-Auto-register accounts for ChatGPT / Cursor / Kiro / Grok / Windsurf / Trae & 13+ AI platforms · Protocol/browser dual-mode · One-click Mac/Windows desktop
+Account automation for 11+ AI platforms · Protocol / browser dual-mode · One-click Mac / Windows desktop
 
 <p>
   <a href="https://github.com/lxf746/any-auto-register/stargazers"><img src="https://img.shields.io/github/stars/lxf746/any-auto-register?style=flat-square&logo=github&color=FFB003" alt="Stars" /></a>
   <a href="https://github.com/lxf746/any-auto-register/releases/latest"><img src="https://img.shields.io/github/v/release/lxf746/any-auto-register?style=flat-square&logo=github&color=22c55e" alt="Release" /></a>
+  <a href="https://github.com/lxf746/any-auto-register/releases"><img src="https://img.shields.io/github/downloads/lxf746/any-auto-register/total?style=flat-square&logo=github&color=8b5cf6" alt="Downloads" /></a>
   <a href="https://github.com/lxf746/any-auto-register/network/members"><img src="https://img.shields.io/github/forks/lxf746/any-auto-register?style=flat-square&logo=github&color=3b82f6" alt="Forks" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/lxf746/any-auto-register?style=flat-square&color=f97316" alt="License" /></a>
 </p>
 
 <p>
-  <a href="https://github.com/lxf746/any-auto-register/releases/latest">Download desktop</a>
+  <a href="https://github.com/lxf746/any-auto-register/releases/latest"><b>Download desktop</b></a>
+  &nbsp;·&nbsp;
+  <a href="#what-it-solves">What it solves</a>
+  &nbsp;·&nbsp;
+  <a href="#at-a-glance">Screenshots</a>
+  &nbsp;·&nbsp;
+  <a href="#community">Community</a>
   &nbsp;·&nbsp;
   <a href="README.md">中文</a>
   &nbsp;·&nbsp;
   <a href="README_vi.md">Tiếng Việt</a>
 </p>
 
-<img src="assets/screenshots/dashboard.png" alt="Any Auto Register Dashboard" width="92%" />
+<img src="assets/screenshots/概览.png" alt="Any Auto Register Dashboard" width="92%" />
 
 </div>
 
@@ -27,230 +34,224 @@ Auto-register accounts for ChatGPT / Cursor / Kiro / Grok / Windsurf / Trae & 13
 
 > **This is the official upstream of [`lxf746/any-auto-register`](https://github.com/lxf746/any-auto-register)** — the original author's repository with the most timely updates. Other repositories with the same name are forks.
 
-> This project is for learning and research only, not for commercial misuse. Users are solely responsible for any consequences arising from its use.
+> For learning and research only. Not for commercial misuse. Users are responsible for evaluating and complying with the terms of service of the targeted platforms, and for any consequences that arise from use.
 
-## Table of Contents
+## What it solves
 
-- [Highlights](#highlights)
-- [Features](#features)
-- [Screenshots](#screenshots)
-- [Tech Stack](#tech-stack)
-- [Desktop Download](#desktop-download)
-- [Quick Start](#quick-start)
-- [Docker Deployment](#docker-deployment)
-- [Mailbox Providers](#mailbox-providers)
-- [Captcha Providers](#captcha-providers)
-- [Proxy Pool](#proxy-pool)
-- [SMS Providers](#sms-providers)
-- [Account Lifecycle](#account-lifecycle)
-- [Stats Dashboard](#stats-dashboard)
-- [Any2API Integration](#any2api-integration)
-- [Plugin Development](#plugin-development)
-- [FAQ](#faq)
-- [Community](#community)
-- [Star History](#star-history)
-- [License](#license)
+Most similar projects only answer *"how do I register one platform"* and leave the engineering gaps wide open: how to manage mailboxes, get past captchas, rotate proxies, keep accounts alive after registration, refresh expired tokens, diagnose failures. Any Auto Register handles all of it.
 
-## Highlights
+| | Other tools | Any Auto Register |
+|---|---|---|
+| Deployment | CLI / Docker / `.py` scripts | Desktop client (Mac / Win), double-click to run, embedded React UI |
+| Platform coverage | 1-3 | 11+ platforms + Anything generic adapter, plugin-based extension |
+| Mailbox options | Mostly IMAP | 9 channels: MoeMail / Cloudflare self-hosted / TempMail / DDG Email, etc. |
+| Execution mode | Browser only | Pure protocol (fastest) / Headless / Headed |
+| Full lifecycle | Register and forget | Scheduled checks + token refresh + trial warning + risk center alerts |
+| Analytics | None | Success-rate dashboard with error attribution (proxy banned / mailbox failed / second-factor) |
+| API gateway sync | None | Auto-push to [Any2API](https://github.com/lxf746/any2api), unified OpenAI-compatible protocol layer |
+| Architecture | Usually hardcoded | Fully pluggable: platform / mailbox / captcha / SMS / proxy all hot-swappable |
 
-Why choose any-auto-register over alternatives:
+Pair with the [`Any2API`](https://github.com/lxf746/any2api) gateway for an end-to-end pipeline: **bulk-register → auto-push → instantly usable as OpenAI / Claude-compatible API**.
 
-| Capability | any-auto-register | Other tools |
-|------|------|------|
-| 🖥️ **One-click desktop app** | ✅ Mac / Windows Electron client, no CLI required | ❌ Usually CLI / Docker only |
-| 🧩 **Platform coverage** | ✅ 13+ platforms out-of-the-box + generic Anything adapter | Usually 1-3 platforms |
-| 📨 **Mailbox services** | ✅ 9 services (self-hosted + public + DDG) | Usually 1-2 |
-| ⚡ **Three execution modes** | ✅ Pure protocol (no browser, fastest) / headless / headed | Usually browser-only |
-| 🔁 **Account lifecycle** | ✅ Validity check, token auto-refresh, trial expiration warning | ❌ Most only register |
-| 📊 **Success-rate dashboard** | ✅ Per-platform / per-proxy / per-day stats, error aggregation | ❌ |
-| 🔌 **Any2API integration** | ✅ Register-and-use, auto-push to gateway | ❌ |
-| 📦 **Plugin architecture** | ✅ Platform / mailbox / captcha / SMS / proxy all pluggable | Usually hardcoded |
+## At a glance
 
-> 💡 Combine [`Any2API`](https://github.com/lxf746/any2api) gateway + `any-auto-register` to enable a full pipeline: **bulk-register accounts → auto-push to gateway → instantly use as OpenAI/Claude-compatible API**.
+> Screenshots from the latest desktop build (`v1.0.29`), updated with each release. The hero image above is the Overview dashboard — six real-time indicators (total / alive / failed / today's registrations / queue / retries), with a stacked success-rate + lifecycle-monitoring view and a local-runtime summary panel. Below are the other workspaces:
 
-## Features
+### Account pool — unified multi-platform management
 
-- **Multi-platform**: ChatGPT, Cursor, Kiro, Trae.ai, Tavily, Grok, Blink, Cerebras, OpenBlockLabs, Windsurf, plus a generic Anything adapter for custom plugins
-- **Multi-mailbox**: MoeMail (self-hosted), Laoudo, DuckMail, Testmail, Cloudflare Worker self-hosted, Freemail, TempMail.lol, Temp-Mail Web, DuckDuckGo Email
-- **Multi-mode execution**: API protocol (no browser) / headless browser / headed browser (per-platform support)
-- **Captcha**: YesCaptcha, 2Captcha, local Solver (Camoufox)
-- **SMS**: SMS-Activate, HeroSMS (for platforms requiring phone verification)
-- **Proxy pool**: static round-robin + dynamic API extraction + rotating gateway, success-rate weighting, auto-disable failed proxies
-- **Account lifecycle**: scheduled validity checks, automatic token refresh, trial expiration warnings
-- **Success-rate dashboard**: stats by platform, day, and proxy; error aggregation
-- **Concurrent registration**: configurable concurrency
-- **Real-time logs**: SSE streaming to frontend
-- **Account export**: JSON, CSV, CPA, Sub2API, Kiro-Go, Any2API formats
-- **Any2API sync**: auto-push registered accounts to Any2API gateway, ready to use immediately
-- **Per-platform actions**: customizable actions like Kiro account switching, Trae Pro upgrade-link generation
+Per-platform tabs, with passwords / steward / status / quota / payment link / last query time visible at a glance. Search, bulk import / export, copy single rows, open payment links.
 
-## Screenshots
+![Account pool](assets/screenshots/账号池.png)
 
-> 📸 *Screenshots will be updated with each release. For a full demo, try the [Desktop Download](#desktop-download).*
+### Task queue — batch registration and history
 
-### Dashboard
-![Dashboard](assets/screenshots/dashboard.png)
+All tasks vs. running tasks at a glance. Each card shows platform, success / total, timestamp, and status. Pause everything, clear the queue, or open the live log for one task.
 
-### Registration Task
-![Registration Task](assets/screenshots/register-task.png)
+![Task queue](assets/screenshots/任务队列.png)
 
-### Settings
-![Settings](assets/screenshots/settings.png)
+### Registration log — real-time step tracing
 
-### Accounts
-![Accounts](assets/screenshots/accounts.png)
+Every step of the registration flow is streamed to the frontend via SSE — OAuth code exchange, token issuance, quota query, all visible. When something fails, you see exactly which step.
 
-## Tech Stack
+![Registration log](assets/screenshots/注册.png)
 
-| Layer | Technology |
-|------|------|
-| Backend | FastAPI + SQLite (SQLModel) |
-| Frontend | React + TypeScript + Vite + TailwindCSS |
-| HTTP | curl_cffi (browser fingerprint spoofing) |
-| Browser automation | Playwright / Camoufox |
+### Settings — desktop-side preferences
 
-## Desktop Download
+Theme / language / global default proxy, plus desktop-only switches: launch at boot, minimize to tray, close-to-tray, check updates on launch, auto-backup directory.
 
-> 🚀 **Zero-config one-click**: Skip Python and Node.js — just download the desktop client and double-click.
+![Settings](assets/screenshots/设置.png)
+
+## Core capabilities
+
+Grouped by responsibility:
+
+**Registration flow**
+
+- **Platforms**: ChatGPT / Cursor / Kiro / Trae.ai / Tavily / Grok / Blink / Cerebras / OpenBlockLabs / Windsurf, plus the Anything generic adapter
+- **Mailboxes**: MoeMail self-hosted / Cloudflare Worker self-hosted / Laoudo / DuckMail / Testmail / Freemail / TempMail.lol / Temp-Mail Web / DuckDuckGo Email
+- **Captcha**: YesCaptcha / 2Captcha / local Solver (Camoufox)
+- **SMS**: SMS-Activate / HeroSMS
+- **Execution modes**: protocol (no browser, fastest) / Headless / Headed, switchable per platform
+- **Local 2FA**: built-in TOTP generator, no third-party app needed
+
+**Operations**
+
+- **Lifecycle**: scheduled validity check + token auto-refresh + trial warning, one-click refresh from the dashboard
+- **Risk center**: centralized alerts for *Token expired* / *Trial running out* / *Proxy unreachable*
+- **Success-rate stats**: global success rate + error attribution (first-try / second-factor / proxy banned / mailbox failure), broken down by platform / day / proxy
+- **Task queue**: batch registration history + live progress + per-task logs
+
+**System**
+
+- **Proxy pool**: static (success-rate weighted) + dynamic API extraction + rotating gateway, auto-disable on failure
+- **Any2API sync**: auto-push registered accounts to the gateway — ready to use immediately
+- **Export formats**: JSON / CSV / CPA / Sub2API / Kiro-Go / Any2API `admin.json`
+- **Concurrency & logging**: configurable concurrency, SSE live logs, persistent task runner
+- **Plugin architecture**: platform / mailbox / captcha / SMS / proxy drivers — all hot-swappable
+
+## Quick start
+
+### Desktop (recommended)
+
+> 🚀 Zero config. Electron bundles the full backend + frontend, double-click and go.
 
 | Platform | Download |
 |------|------|
 | 🍎 macOS (Intel / Apple Silicon) | [Get `.dmg` from Releases](https://github.com/lxf746/any-auto-register/releases/latest) |
 | 🪟 Windows | [Get `.exe` from Releases](https://github.com/lxf746/any-auto-register/releases/latest) |
 
-The desktop client bundles the full Python backend + React frontend via Electron — works out of the box. Each new version (`v*` tag) is auto-built and published to [Releases](https://github.com/lxf746/any-auto-register/releases).
+Install → launch → enter activation code ([get one from the group](#community)) → pick a platform → configure mailbox → start registering.
 
-## Quick Start
-
-### Requirements
-
-- Python 3.11+
-- Node.js 18+
-
-### Install
-
-#### macOS / Linux
+### Docker
 
 ```bash
-git clone https://github.com/lxf746/any-auto-register.git
-cd any-auto-register
+mkdir -p any-auto-register && cd any-auto-register
 
-python3 -m venv .venv
-source .venv/bin/activate
+cat > docker-compose.yml <<'EOF'
+services:
+  app:
+    image: ghcr.io/lxf746/any-auto-register:latest
+    ports:
+      - "8000:8000"   # Web UI
+      - "6080:6080"   # noVNC (visualize the browser)
+      - "8889:8889"   # Turnstile Solver
+    environment:
+      - DISPLAY=:99
+      # - APP_PASSWORD=changeme
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
+EOF
 
-pip install -r requirements.txt
-
-cd frontend && npm install && npm run build && cd ..
-```
-
-#### Windows
-
-```bat
-git clone https://github.com/lxf746/any-auto-register.git
-cd any-auto-register
-
-python -m venv .venv
-.venv\Scripts\activate
-
-pip install -r requirements.txt
-
-cd frontend
-npm install
-npm run build
-cd ..
-```
-
-### Install browsers (optional, required for headless/headed modes)
-
-```bash
-python3 -m playwright install chromium
-python3 -m camoufox fetch
-```
-
-### Run
-
-```bash
-.venv/bin/python3 -m uvicorn main:app --port 8000
-```
-
-Open `http://localhost:8000` in your browser.
-
-## Docker Deployment
-
-```bash
 docker compose up -d
 ```
 
-Open `http://localhost:8000`. The database is persisted to `./data/`.
+| Service | URL | Notes |
+|------|------|------|
+| Web UI | `http://localhost:8000` | Main interface |
+| noVNC | `http://localhost:6080/vnc.html` | Watch the browser (headed mode) |
+| Solver | `http://localhost:8889` | Turnstile captcha solver |
 
-For headed browser mode, view automation via noVNC at `http://localhost:6080`.
+When deploying to a cloud server, open ports `8000` / `6080` / `8889`.
 
-## Mailbox Providers
+### From source
 
-Pick a mailbox service to receive verification codes. All providers are managed via the **Settings → Providers** page in the Web UI:
+> The source tree contains the core registration flow and the full provider system — fine for self-hosting and extension. Advanced task-queue controls, license management, payment-flow enhancements, and the latest platform adaptations ship with the desktop build.
 
-- **MoeMail** (recommended): self-hosted on Cloudflare via [cloudflare_temp_email](https://github.com/dreamhunter2333/cloudflare_temp_email)
-- **Laoudo**: stable custom-domain mailboxes
-- **Cloudflare Worker self-hosted**: full control, deploy your own
-- **DuckMail / TempMail.lol / Temp-Mail Web**: public temp-mail services
-- **DuckDuckGo Email**: `@duck.com` aliases via DDG Email Protection (requires forwarding IMAP)
-- **Freemail**: Cloudflare Worker-based, supports admin token + username/password auth
-- **Testmail**: `testmail.app` namespace mode, ideal for concurrent tasks
+Requires Python 3.11+ / Node.js 18+:
 
-Detailed field references are available in the Web UI's provider editor and in the [Chinese README](README.md#邮箱服务配置).
+```bash
+git clone https://github.com/lxf746/any-auto-register.git
+cd any-auto-register/account_manager
 
-## Captcha Providers
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+
+cd frontend && npm install && npm run build && cd ..
+
+# Optional — required for browser modes
+python3 -m playwright install chromium
+python3 -m camoufox fetch
+
+python3 -m uvicorn main:app --port 8000
+```
+
+Open `http://localhost:8000`. For frontend hot-reload see [Development](#development).
+
+## Configuration
+
+### Mailbox providers
+
+Pick a mailbox service to receive verification codes. Mailbox, captcha, and SMS configs are driven by a backend provider catalog — the **Settings** page in the Web UI is list-style CRUD: existing configs on the left, unified editor on the right. New providers added on the backend appear automatically after a refresh — no frontend code changes needed.
+
+| Provider | Notes |
+|----------|------|
+| **MoeMail** (recommended) | Self-hosted temp mail based on [cloudflare_temp_email](https://github.com/dreamhunter2333/cloudflare_temp_email). No config needed — addresses generated on the fly. |
+| **Laoudo** | Fixed custom-domain mailboxes. Highest stability, good for long-term use. |
+| **Cloudflare Worker self-hosted** | Deploy your own based on `cloudflare_temp_email`. Full control. |
+| **Testmail** | `testmail.app` namespace mode, ideal for concurrent tasks (auto tag + timestamp filtering). |
+| **DuckDuckGo Email** | `@duck.com` private aliases + IMAP forwarding. |
+| **Freemail** | Cloudflare Worker self-hosted, supports admin token or username / password auth. |
+| **DuckMail** | Public temp mail, no config. Proxy may be required in some regions. |
+| **TempMail.lol** | Public temp mail, anonymous addresses generated automatically. |
+| **Temp-Mail Web** | Based on `web2.temp-mail.org`. |
+
+Field formats are documented inline in the Settings editor — the backend renders each form from its provider catalog automatically.
+
+### Captcha providers
 
 | Service | Notes |
 |------|------|
 | YesCaptcha | Sign up at [yescaptcha.com](https://yescaptcha.com) for a Client Key |
 | 2Captcha | Sign up at [2captcha.com](https://2captcha.com) for an API Key |
-| Local Solver | Uses Camoufox locally, run `python3 -m camoufox fetch` first |
+| Local Solver | Camoufox local solver, run `python3 -m camoufox fetch` first |
 
-## Proxy Pool
+### Proxy pool
 
-The system supports both static and dynamic proxies:
+| 🌟 Recommended Proxy | Description |
+| :--- | :--- |
+| <a href="https://www.swiftproxy.net/?ref=lxf746"><img src="assets/swiftproxy.svg" width="130" alt="Swiftproxy"/></a> | **[Swiftproxy](https://www.swiftproxy.net/?ref=lxf746)** — 80M+ high-quality residential IPs, stable and highly anonymous, dynamic traffic never expires, free trial available, perfect fit for automated rotation. |
 
-- **Static proxies**: managed in the Proxy page; weighted by success rate; auto-disabled after 5 consecutive failures
-- **Dynamic proxies**: API-extraction or rotating-gateway providers (BrightData, Oxylabs, IPRoyal, etc.); falls back to static pool on failure
+- **Static proxies** — added manually on the Proxy page, weighted by success rate, auto-disabled after 5 consecutive failures
+- **API extraction** — pulls IPs dynamically via HTTP API, works for most vendor extraction endpoints
+- **Rotating gateway** — fixed entry, different exit IP per request — works for BrightData / Oxylabs / IPRoyal etc.
 
-## SMS Providers
+When a `proxy` provider is enabled in the database, registration tries dynamic proxies first and falls back to the static pool on failure.
 
-For platforms requiring phone verification (e.g., Cursor):
+### SMS providers
+
+For platforms requiring phone verification (e.g. Cursor):
 
 | Service | Notes |
 |------|------|
 | SMS-Activate | API key + default country |
-| HeroSMS | API key + service code, country ID, max price, number reuse policy |
+| HeroSMS | API key + service code, country ID, max price, number-reuse policy |
 
-## Account Lifecycle
+The task-level `sms_provider` parameter takes priority; otherwise the default SMS provider is used.
 
-Built-in background lifecycle manager runs:
+## Advanced
 
-- **Validity check** every 6h — invalid accounts marked
-- **Token refresh** every 12h — auto-refreshes expiring tokens (currently ChatGPT)
-- **Trial warning** — flags accounts nearing expiration
+### Account lifecycle
 
-Manual triggers:
+A background lifecycle manager runs automatically:
 
-- `POST /api/lifecycle/check` — manual validity check
-- `POST /api/lifecycle/refresh` — manual token refresh
-- `POST /api/lifecycle/warn` — manual trial warning
-- `GET /api/lifecycle/status` — manager status
+- **Validity check** every 6 hours — invalid accounts marked
+- **Token auto-refresh** every 12 hours — refreshes expiring tokens (currently ChatGPT)
+- **Trial warning** — flags accounts nearing expiration, updates status when expired
 
-## Stats Dashboard
+Manual triggers: `POST /api/lifecycle/{check|refresh|warn}`, `GET /api/lifecycle/status` for state.
 
-Query registration stats via API:
+### Success-rate stats & error attribution
 
-- `GET /api/stats/overview` — global overview
-- `GET /api/stats/by-platform` — per-platform success rate
-- `GET /api/stats/by-day?days=30` — daily trends
-- `GET /api/stats/by-proxy` — proxy success ranking
-- `GET /api/stats/errors?days=7` — error aggregation
+- `GET /api/stats/overview` — global overview (totals, success rate, status distribution)
+- `GET /api/stats/by-platform` — per-platform
+- `GET /api/stats/by-day?days=30` — daily trend
+- `GET /api/stats/by-proxy` — proxy ranking
+- `GET /api/stats/errors?days=7` — aggregated error attribution
 
-## Any2API Integration
+### Any2API integration
 
-Pair with [Any2API](https://github.com/lxf746/any2api) — registered accounts are auto-pushed to the gateway, ready to use immediately as OpenAI/Claude-compatible APIs.
+Pair with the [Any2API](https://github.com/lxf746/any2api) gateway — registered accounts are auto-pushed and immediately usable.
 
 Configure in Settings:
 
@@ -259,18 +260,97 @@ Configure in Settings:
 | `any2api_url` | Any2API instance URL, e.g. `http://localhost:8099` |
 | `any2api_password` | Any2API admin password |
 
-Push targets per platform: Kiro → `kiroAccounts`, Grok → `grokTokens`, Cursor → `cursorConfig`, ChatGPT → `chatgptConfig`, Blink → `blinkConfig`, Windsurf → `windsurfAccounts`.
+Push targets per platform:
+
+| Platform | Target |
+|------|----------|
+| Kiro | `kiroAccounts` pool |
+| Grok | `grokTokens` pool |
+| Cursor | `cursorConfig` cookie |
+| ChatGPT | `chatgptConfig` token |
+| Blink | `blinkConfig` credentials |
+| Windsurf | `windsurfAccounts` pool |
 
 If `any2api_url` is not set, this integration is silently skipped.
 
-## Plugin Development
+## Tech stack
 
-Adding a platform uses the current plugin system:
+| Layer | Technology |
+|------|------|
+| Backend | FastAPI + SQLite (SQLModel) |
+| Frontend | React + TypeScript + Vite + TailwindCSS |
+| HTTP | curl_cffi (browser fingerprint spoofing) |
+| Browser automation | Playwright / Camoufox |
+| Desktop | Electron + Nuitka packaging |
 
-1. Create `platforms/myplatform/` with `__init__.py` and `plugin.py`.
-2. Keep `plugin.py` as a module composer using `ConfiguredPlatformPlugin`.
-3. Put registration in `registration/module.py`, protocol logic in `registration/protocol.py`, mailbox orchestration in `registration/worker.py`, and optional browser/OAuth logic in `registration/browser.py` and `registration/oauth.py`.
-4. Add `query.py`, `payment.py`, or `transfer.py` only when the platform supports those capabilities.
+## Development
+
+<details>
+<summary><b>Project structure</b></summary>
+
+```
+account_manager/
+├── main.py                 # FastAPI entry
+├── api/                    # HTTP routes
+│   ├── accounts.py         # account CRUD + export
+│   ├── account_providers.py     # mailbox / captcha / SMS / proxy
+│   ├── registration.py          # registration tasks + SSE
+│   ├── query.py                 # account state queries
+│   ├── payment.py               # payment links / actions
+│   ├── transfer.py              # import / export
+│   ├── platforms.py             # platform listing
+│   ├── provider_definitions.py  # provider definitions
+│   ├── proxies.py               # proxy management
+│   ├── health.py                # health check
+│   └── system.py                # system settings / Solver
+├── application/            # application services
+├── domain/                 # domain models
+├── infrastructure/         # repositories + runtime adapters
+├── core/                   # base classes (platform / mailbox / captcha / SMS)
+├── platforms/              # platform plugins
+├── providers/              # provider plugins (mailbox / captcha / SMS / proxy)
+├── services/               # background services (Solver process / task runner)
+├── customer_portal_api/    # consumer + admin APIs
+├── electron/               # Electron desktop packaging
+├── tests/                  # tests
+└── frontend/               # React frontend
+```
+
+</details>
+
+<details>
+<summary><b>Development mode (frontend hot-reload)</b></summary>
+
+```bash
+cd frontend
+npm run dev
+# Open http://localhost:5173 — Vite proxies API requests to the backend
+```
+
+The single entry point is `main:app`. All backend routes live under `/api/*`. See [`docs/frontend-api-contract.md`](docs/frontend-api-contract.md) for the API contract.
+
+</details>
+
+<details>
+<summary><b>Adding a platform plugin</b></summary>
+
+Plugin layout:
+
+```
+platforms/myplatform/
+├── plugin.py
+├── registration/
+│   ├── module.py       # registration module entry
+│   ├── protocol.py     # protocol core
+│   ├── worker.py       # mailbox provider → protocol flow
+│   ├── browser.py      # browser registration (optional)
+│   └── oauth.py        # browser OAuth (optional)
+├── query.py            # query capability (optional)
+├── payment.py          # payment capability (optional)
+└── transfer.py         # import / export capability (optional)
+```
+
+Minimal `plugin.py`:
 
 ```python
 from core.platform_plugin import ConfiguredPlatformPlugin
@@ -282,45 +362,91 @@ class MyPlatformPlugin(ConfiguredPlatformPlugin):
     display_name = "My Platform"
     version = "2.0.0"
     query_class = "MyPlatformQuery"
+    payment_class = "MyPlatformPayment"
+    transfer_class = "MyPlatformTransfer"
 ```
 
-The platform auto-loads on startup from `platforms/*/plugin.py`. See the [Chinese README](README.md#插件开发) for the full registration module example.
+The system scans `platforms/*/plugin.py` at startup and auto-loads anything registered via `@register`. For a complete `registration/module.py` example, look at existing platforms (`platforms/kiro/`, `platforms/chatgpt/`).
+
+</details>
+
+<details>
+<summary><b>Contributing</b></summary>
+
+1. Fork this repo
+2. Create a feature branch: `git checkout -b feature/my-feature`
+3. Commit: `git commit -m 'feat: add my feature'` ([Conventional Commits](https://www.conventionalcommits.org/) recommended)
+4. Push: `git push origin feature/my-feature`
+5. Open a Pull Request
+
+</details>
 
 ## FAQ
 
-**Captcha keeps failing?**
-Verify your captcha provider is configured correctly. In protocol mode, prefer YesCaptcha/2Captcha. In browser mode, Camoufox tries the Turnstile checkbox first and falls back to remote solvers. If failures persist, check proxy IP quality — high-risk IPs trigger stricter challenges.
+<details>
+<summary><b>Captcha keeps failing?</b></summary>
 
-**Proxies getting banned / low success rate?**
-Use residential proxies over datacenter IPs. Lower concurrency. Check per-proxy stats in the Proxy page and disable low-performers. Different platforms have different IP sensitivity — consider per-platform proxy pools.
+1. Verify the captcha provider is configured correctly (YesCaptcha Client Key or local Solver)
+2. In protocol mode, prefer remote services (YesCaptcha / 2Captcha)
+3. In browser mode, Camoufox tries the Turnstile checkbox first and falls back to a remote solver
+4. If failures persist, check proxy IP quality — high-risk IPs trigger stricter challenges
 
-**Browser mode setup?**
+</details>
+
+<details>
+<summary><b>Proxies getting banned / low success rate?</b></summary>
+
+1. Check per-proxy stats on the Proxy page and disable low-performers
+2. Use residential proxies, not datacenter IPs
+3. Lower concurrency to avoid bursting from the same IP
+4. Different platforms have different IP sensitivity — consider per-platform proxy pools
+
+</details>
+
+<details>
+<summary><b>Solver startup timeout?</b></summary>
+
+`[Solver] startup timeout` means the local Turnstile Solver didn't pass health-check within 30s. The main service still starts. Usual causes: first-run Camoufox download, missing browser deps, or port `8889` taken.
+
+1. Run `python3 -m camoufox fetch` locally, then click "Restart Solver" in Settings
+2. To skip the local Solver, configure YesCaptcha or 2Captcha and pick a remote solver in the task config
+3. For Docker, prefer the prebuilt image; for bare metal, check port `8889` and Camoufox install
+
+</details>
+
+<details>
+<summary><b>ARM image build failing?</b></summary>
+
+If the build log shows `src/pages/Accounts.tsx ... TS6133/TS7006`, the actual failure is in the frontend TypeScript build — not ARM or apt issues. Run locally first:
+
 ```bash
-python3 -m playwright install chromium
-python3 -m camoufox fetch
+cd frontend && npm run build
 ```
 
-**Solver startup timeout?**
-The local Turnstile Solver needs Camoufox installed. Run `python3 -m camoufox fetch` first, then click "Restart Solver" in the Settings page. Or skip local Solver entirely and use YesCaptcha / 2Captcha.
+Then rebuild:
+
+```bash
+docker compose build --no-cache && docker compose up -d
+```
+
+</details>
 
 ## Community
 
-Join the user group for updates, configuration tips, and registration know-how:
+Join the user group for latest updates, activation codes, configuration tips, and registration tricks:
 
-### QQ Group
-
-| Group | ID | Status |
+| QQ Group | ID | Status |
 |---|---|---|
 | #1 | `1081650009` | Full |
 | #2 | `1097916468` | Open |
 
-Search the group ID in QQ to join.
-
-For bugs and feature requests, please use [Issues](https://github.com/lxf746/any-auto-register/issues).
+Search the group ID inside QQ. For bugs and feature requests, please use [Issues](https://github.com/lxf746/any-auto-register/issues).
 
 ## Star History
 
 [![Star History Chart](https://api.star-history.com/svg?repos=lxf746/any-auto-register&type=Date)](https://star-history.com/#lxf746/any-auto-register&Date)
+
+> If this project saved you some repetitive work, a ⭐ helps others find it.
 
 ## Sponsors
 
@@ -337,19 +463,8 @@ For bugs and feature requests, please use [Issues](https://github.com/lxf746/any
 <a href="https://www.rapidproxy.io/?ref=lxf"><b>Free trial →</b></a>
 </td>
 </tr>
-<tr>
-<td width="220" align="center">
-<a href="https://www.swiftproxy.net/?ref=lxf746" target="_blank">
-<img src="assets/swiftproxy.svg" alt="Swiftproxy" width="180" />
-</a>
-</td>
-<td>
-<b><a href="https://www.swiftproxy.net/?ref=lxf746">Swiftproxy</a></b> — 80M+ high-quality residential IPs, stable and highly anonymous connections, dynamic traffic never expires, free trial available.<br/>
-<a href="https://www.swiftproxy.net/?ref=lxf746"><b>Free trial →</b></a>
-</td>
-</tr>
 </table>
 
 ## License
 
-This project is licensed under [AGPL-3.0](LICENSE). Personal learning and research are unrestricted; commercial use must comply with AGPL-3.0 (derivative works must be open-sourced).
+[AGPL-3.0](LICENSE). Personal learning and research are unrestricted; commercial use must comply with AGPL-3.0 (derivative works must be open-sourced).
