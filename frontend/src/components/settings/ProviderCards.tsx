@@ -137,6 +137,7 @@ function EditModal({
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const [testing, setTesting] = useState(false)
+  const [refreshingToken, setRefreshingToken] = useState(false)
   const [testResult, setTestResult] = useState<{ ok: boolean; message?: string; error?: string } | null>(null)
   const [asyncOptions, setAsyncOptions] = useState<Record<string, Array<{ value: string; label: string }>>>({})
   const [asyncLoading, setAsyncLoading] = useState<Record<string, boolean>>({})
@@ -234,6 +235,32 @@ function EditModal({
     }
   }
 
+  const isCloudMail = provider.value === 'cloudmail_api' || provider.driver_type === 'cloudmail_api'
+
+  const handleRefreshToken = async () => {
+    setRefreshingToken(true)
+    setTestResult(null)
+    try {
+      const result = await apiFetch('/provider-settings/skymail/refresh-token', {
+        method: 'POST',
+        body: JSON.stringify({
+          provider_key: provider.value,
+          skymail_api_base: form.skymail_api_base || 'https://api.skymail.ink',
+          skymail_email: form.skymail_email || '',
+          skymail_password: form.skymail_password || '',
+        }),
+      })
+      if (result.skymail_token) {
+        setForm(f => ({ ...f, skymail_token: result.skymail_token }))
+      }
+      setTestResult({ ok: true, message: 'Token 已刷新' })
+    } catch (e: any) {
+      setTestResult({ ok: false, error: e.message || 'Token 刷新失败' })
+    } finally {
+      setRefreshingToken(false)
+    }
+  }
+
   return (
     <div className="dialog-backdrop" onClick={onClose}>
       <div className="dialog-panel dialog-panel-sm flex flex-col" onClick={e => e.stopPropagation()}>
@@ -320,12 +347,22 @@ function EditModal({
         )}
 
         {/* Footer */}
-        <div className="flex gap-2 border-t border-[var(--border)] px-5 py-3">
-          <Button onClick={handleSave} disabled={saving} className="flex-1">
+        <div className="flex flex-wrap gap-2 border-t border-[var(--border)] px-5 py-3">
+          <Button onClick={handleSave} disabled={saving} className="flex-1 min-w-[120px]">
             <Save className="h-3.5 w-3.5 mr-1.5" />
             {saved ? '已保存 ✓' : saving ? '保存中...' : '保存'}
           </Button>
-          <Button variant="outline" onClick={handleTest} disabled={testing || fields.length === 0} className="flex-1">
+          {isCloudMail && (
+            <Button
+              variant="outline"
+              onClick={handleRefreshToken}
+              disabled={refreshingToken || !form.skymail_email || !form.skymail_password}
+              className="flex-1 min-w-[120px]"
+            >
+              {refreshingToken ? '刷新中...' : '刷新 Token'}
+            </Button>
+          )}
+          <Button variant="outline" onClick={handleTest} disabled={testing || fields.length === 0} className="flex-1 min-w-[120px]">
             <FlaskConical className="h-3.5 w-3.5 mr-1.5" />
             {testing ? '测试中...' : '测试连接'}
           </Button>

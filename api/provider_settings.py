@@ -117,3 +117,37 @@ def _test_mailbox(driver_type: str, extra: dict, definition) -> dict:
             "error": f"测试失败: {str(exc)}",
             "detail": traceback.format_exc()[-500:],
         }
+
+
+class SkyMailRefreshRequest(BaseModel):
+    provider_key: str = ""
+    skymail_api_base: str = ""
+    skymail_email: str = ""
+    skymail_password: str = ""
+
+
+@router.post("/skymail/refresh-token")
+def refresh_skymail_token(body: SkyMailRefreshRequest):
+    """刷新 CloudMail / SkyMail Authorization Token 并写回 provider 配置。"""
+    from core.skymail_auth import SkyMailAuthError, fetch_skymail_token, persist_skymail_token
+    from infrastructure.provider_settings_repository import ProviderSettingsRepository
+
+    provider_key = str(body.provider_key or "").strip()
+    settings_repo = ProviderSettingsRepository()
+    runtime = settings_repo.resolve_runtime_settings("mailbox", provider_key, {}) if provider_key else {}
+
+    api_base = (body.skymail_api_base or runtime.get("skymail_api_base") or "https://api.skymail.ink").strip()
+    email = (body.skymail_email or runtime.get("skymail_email") or "").strip()
+    password = body.skymail_password or runtime.get("skymail_password") or ""
+    if not api_base or not email or not password:
+        raise HTTPException(400, "请先配置 CloudMail API Base、管理员邮箱和密码")
+
+    try:
+        token = fetch_skymail_token(api_base, email, password)
+    except SkyMailAuthError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    if provider_key:
+        persist_skymail_token(token, provider_key=provider_key)
+
+    return {"ok": True, "skymail_token": token}
