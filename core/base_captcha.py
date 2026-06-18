@@ -83,7 +83,10 @@ def create_captcha_solver(provider_key: str, extra: dict | None = None) -> BaseC
     driver_type = (definition.driver_type if definition else key).lower()
 
     if driver_type == "local_solver":
-        return LocalSolverCaptcha(str(merged.get("solver_url", "") or ""))
+        from services.solver_manager import SOLVER_URL
+
+        solver_url = str(merged.get("solver_url", "") or "").strip() or SOLVER_URL
+        return LocalSolverCaptcha(solver_url)
     if driver_type == "yescaptcha_api":
         client_key = str(merged.get("yescaptcha_key", "") or "")
         if not client_key:

@@ -324,7 +324,14 @@ _BUILTIN_DEFINITIONS: list[dict] = [
         "category": "thirdparty",
         "auth_modes": [],
         "fields": [
-            {"key": "solver_url", "label": "Solver 地址", "placeholder": "http://localhost:8889"},
+            {
+                "key": "solver_url",
+                "label": "Solver 地址",
+                "placeholder": "http://localhost:8889",
+                "category": "connection",
+                "default_value": "http://localhost:8889",
+                "hint": "留空则默认使用 http://localhost:8889（与后端自动启动的 Solver 端口一致）",
+            },
         ],
     },
     {

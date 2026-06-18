@@ -8,7 +8,10 @@ class LocalSolverCaptcha(BaseCaptcha):
     """调用本地 api_solver 服务解 Turnstile（Camoufox/patchright）"""
 
     def __init__(self, solver_url: str = ""):
-        self.solver_url = solver_url.rstrip("/")
+        from services.solver_manager import SOLVER_URL
+
+        resolved = str(solver_url or "").strip() or SOLVER_URL
+        self.solver_url = resolved.rstrip("/")
 
     @classmethod
     def from_config(cls, config: dict) -> 'LocalSolverCaptcha':
@@ -16,6 +19,11 @@ class LocalSolverCaptcha(BaseCaptcha):
 
     def solve_turnstile(self, page_url: str, site_key: str) -> str:
         import requests, time
+
+        if not self.solver_url:
+            raise RuntimeError(
+                "本地 Turnstile Solver 地址未配置，请在设置 -> 验证服务 -> 本地验证码求解器中填写 Solver 地址（默认 http://localhost:8889）"
+            )
         # 提交任务
         r = requests.get(
             f"{self.solver_url}/turnstile",
