@@ -86,6 +86,32 @@ def _test_mailbox(driver_type: str, extra: dict, definition) -> dict:
     import traceback
     from core.base_mailbox import MAILBOX_FACTORY_REGISTRY
 
+    if driver_type in ("cloudmail_api", "skymail_api"):
+        from core.skymail_auth import SkyMailAuthError, normalize_skymail_token, resolve_skymail_token
+
+        api_base = (extra.get("skymail_api_base") or "https://api.skymail.ink").strip()
+        email = str(extra.get("skymail_email") or "").strip()
+        password = extra.get("skymail_password") or ""
+        token = normalize_skymail_token(extra.get("skymail_token", ""))
+        try:
+            if token:
+                extra["skymail_token"] = token
+            elif email and password:
+                extra["skymail_token"] = resolve_skymail_token(
+                    api_base,
+                    email=email,
+                    password=password,
+                    force_refresh=True,
+                )
+            else:
+                return {
+                    "ok": False,
+                    "error": "请先填写 CloudMail Token，或提供管理员邮箱和密码",
+                }
+        except SkyMailAuthError as exc:
+            return {"ok": False, "error": f"CloudMail Token 获取失败: {exc}"}
+        extra["_skymail_skip_init_refresh"] = "true"
+
     factory = MAILBOX_FACTORY_REGISTRY.get(driver_type)
     if not factory:
         return {"ok": False, "error": f"未找到邮箱驱动: {driver_type}"}
@@ -129,7 +155,7 @@ class SkyMailRefreshRequest(BaseModel):
 @router.post("/skymail/refresh-token")
 def refresh_skymail_token(body: SkyMailRefreshRequest):
     """刷新 CloudMail / SkyMail Authorization Token 并写回 provider 配置。"""
-    from core.skymail_auth import SkyMailAuthError, fetch_skymail_token, persist_skymail_token
+    from core.skymail_auth import SkyMailAuthError, fetch_skymail_token, normalize_skymail_token, persist_skymail_token
     from infrastructure.provider_settings_repository import ProviderSettingsRepository
 
     provider_key = str(body.provider_key or "").strip()
@@ -147,6 +173,7 @@ def refresh_skymail_token(body: SkyMailRefreshRequest):
     except SkyMailAuthError as exc:
         raise HTTPException(400, str(exc)) from exc
 
+    token = normalize_skymail_token(token)
     if provider_key:
         persist_skymail_token(token, provider_key=provider_key)
 

@@ -253,7 +253,7 @@ function EditModal({
       if (result.skymail_token) {
         setForm(f => ({ ...f, skymail_token: result.skymail_token }))
       }
-      setTestResult({ ok: true, message: 'Token 已刷新' })
+      setTestResult({ ok: true, message: 'Token 已刷新，可直接点击「测试连接」' })
     } catch (e: any) {
       setTestResult({ ok: false, error: e.message || 'Token 刷新失败' })
     } finally {

@@ -44,7 +44,41 @@ class SkyMailAuthTests(unittest.TestCase):
                 "wrong",
             )
 
-    def test_resolve_skymail_token_prefers_credentials(self):
+    def test_normalize_skymail_token_strips_bearer(self):
+        from core.skymail_auth import normalize_skymail_token
+
+        self.assertEqual(
+            normalize_skymail_token("Bearer abc-123"),
+            "abc-123",
+        )
+
+    def test_resolve_skymail_token_prefers_credentials_when_missing_saved_token(self):
+        with mock.patch(
+            "core.skymail_auth.fetch_skymail_token",
+            return_value="fresh-token",
+        ) as mock_fetch:
+            token = resolve_skymail_token(
+                "https://mail.example.com",
+                email="admin@example.com",
+                password="secret",
+            )
+
+        self.assertEqual(token, "fresh-token")
+        mock_fetch.assert_called_once()
+
+    def test_resolve_skymail_token_keeps_saved_token_by_default(self):
+        with mock.patch("core.skymail_auth.fetch_skymail_token") as mock_fetch:
+            token = resolve_skymail_token(
+                "https://mail.example.com",
+                auth_token="saved-token",
+                email="admin@example.com",
+                password="secret",
+            )
+
+        self.assertEqual(token, "saved-token")
+        mock_fetch.assert_not_called()
+
+    def test_resolve_skymail_token_force_refresh(self):
         with mock.patch(
             "core.skymail_auth.fetch_skymail_token",
             return_value="fresh-token",
@@ -54,6 +88,7 @@ class SkyMailAuthTests(unittest.TestCase):
                 auth_token="old-token",
                 email="admin@example.com",
                 password="secret",
+                force_refresh=True,
             )
 
         self.assertEqual(token, "fresh-token")

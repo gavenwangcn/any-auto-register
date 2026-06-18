@@ -16,6 +16,14 @@ def _build_proxy(proxy: Optional[str]) -> dict | None:
     return {"http": proxy, "https": proxy}
 
 
+def normalize_skymail_token(token: str) -> str:
+    """去掉 Bearer 前缀与首尾空白。"""
+    value = str(token or "").strip()
+    if value.lower().startswith("bearer "):
+        value = value[7:].strip()
+    return value
+
+
 def fetch_skymail_token(
     api_base: str,
     email: str,
@@ -58,7 +66,7 @@ def fetch_skymail_token(
         message = data.get("message") or data
         raise SkyMailAuthError(f"genToken 失败: {message}")
 
-    token = str((data.get("data") or {}).get("token") or "").strip()
+    token = normalize_skymail_token(str((data.get("data") or {}).get("token") or ""))
     if not token:
         raise SkyMailAuthError(f"genToken 未返回 token: {data}")
     return token
@@ -73,12 +81,16 @@ def resolve_skymail_token(
     force_refresh: bool = False,
     proxy: Optional[str] = None,
 ) -> str:
-    """优先用账号密码刷新；否则回退到已保存 token。"""
-    token = (auth_token or "").strip()
-    if force_refresh or (email and password):
+    """优先用已保存 token；需要时可强制用账号密码刷新。"""
+    token = normalize_skymail_token(auth_token)
+    if force_refresh:
+        if not email or not password:
+            raise SkyMailAuthError("SkyMail 强制刷新 Token 需要管理员邮箱和密码")
         return fetch_skymail_token(api_base, email, password, proxy=proxy)
     if token:
         return token
+    if email and password:
+        return fetch_skymail_token(api_base, email, password, proxy=proxy)
     raise SkyMailAuthError(
         "SkyMail 未配置 Token：请填写 skymail_email + skymail_password，或手动填写 skymail_token"
     )
@@ -96,7 +108,7 @@ def persist_skymail_token(token: str, *, provider_key: str = "") -> None:
     if not item:
         return
     auth = dict(item.get_auth())
-    auth["skymail_token"] = token
+    auth["skymail_token"] = normalize_skymail_token(token)
     repo.save(
         setting_id=int(item.id or 0),
         provider_type=item.provider_type,
