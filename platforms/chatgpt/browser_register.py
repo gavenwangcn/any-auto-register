@@ -202,6 +202,139 @@ def _parse_phone_country_and_local(phone_number: str) -> tuple[str, str, str]:
     return "", num, ""
 
 
+def _phone_digits(value: str) -> str:
+    return re.sub(r"\D", "", str(value or ""))
+
+
+def _phone_input_matches(actual: str, expected: str) -> bool:
+    actual_digits = _phone_digits(actual)
+    expected_digits = _phone_digits(expected)
+    if not expected_digits:
+        return False
+    if actual_digits == expected_digits:
+        return True
+    if actual_digits.endswith(expected_digits):
+        return True
+    if expected_digits.endswith(actual_digits) and len(actual_digits) >= 7:
+        return True
+    return False
+
+
+def _clear_input_field(page, selector: str) -> None:
+    try:
+        page.locator(selector).first.click(timeout=1500)
+    except Exception:
+        pass
+    for modifier in ("Control", "Meta"):
+        try:
+            page.keyboard.press(f"{modifier}+a")
+            time.sleep(0.05)
+            page.keyboard.press("Backspace")
+            time.sleep(0.05)
+        except Exception:
+            pass
+    try:
+        page.locator(selector).first.fill("", timeout=1500)
+    except Exception:
+        pass
+
+
+def _fill_phone_input(
+    page,
+    selector: str,
+    *,
+    local_number: str,
+    full_number: str,
+    log,
+) -> bool:
+    """填写 add_phone 页手机号输入框，兼容 React 格式化与 Linux 无 Meta 键环境。"""
+    candidates: list[str] = []
+    for item in (
+        local_number,
+        full_number.lstrip("+"),
+        full_number,
+        _phone_digits(local_number),
+        _phone_digits(full_number),
+    ):
+        item = str(item or "").strip()
+        if item and item not in candidates:
+            candidates.append(item)
+
+    for fill_value in candidates:
+        if _fill_input_like_user(page, selector, fill_value):
+            try:
+                final = str(page.locator(selector).first.input_value() or "")
+            except Exception:
+                final = ""
+            if _phone_input_matches(final, fill_value):
+                log(f"  手机号已填写: {final[:16]}...")
+                return True
+
+        _clear_input_field(page, selector)
+        try:
+            locator = page.locator(selector).first
+            locator.click(force=True, timeout=1500)
+            locator.fill(fill_value, force=True, timeout=2000)
+            final = str(locator.input_value() or "")
+            if _phone_input_matches(final, fill_value):
+                log(f"  手机号 force-fill 成功: {final[:16]}...")
+                return True
+        except Exception:
+            pass
+
+        _clear_input_field(page, selector)
+        try:
+            page.click(selector, timeout=1500)
+            page.keyboard.type(fill_value, delay=random.randint(25, 55))
+            final = str(page.locator(selector).first.input_value() or "")
+            if _phone_input_matches(final, fill_value):
+                log(f"  手机号 keyboard 成功: {final[:16]}...")
+                return True
+        except Exception as exc:
+            log(f"  keyboard 填写失败: {exc}")
+
+        try:
+            js_ok = page.evaluate(
+                """
+                ({ selector, value }) => {
+                  const input = document.querySelector(selector);
+                  if (!input) return false;
+                  input.focus();
+                  const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+                  if (setter) setter.call(input, value);
+                  else input.value = value;
+                  input.dispatchEvent(new Event('input', { bubbles: true }));
+                  input.dispatchEvent(new Event('change', { bubbles: true }));
+                  const digits = String(value || '').replace(/\\D/g, '');
+                  const actual = String(input.value || '').replace(/\\D/g, '');
+                  return actual === digits || actual.endsWith(digits) || digits.endsWith(actual);
+                }
+                """,
+                {"selector": selector, "value": fill_value},
+            )
+            if js_ok:
+                final = str(page.locator(selector).first.input_value() or "")
+                log(f"  手机号 JS setValue 成功: {final[:16]}...")
+                return True
+        except Exception as exc:
+            log(f"  JS setValue 失败: {exc}")
+
+    digits = _phone_digits(local_number or full_number)
+    if digits:
+        _clear_input_field(page, selector)
+        try:
+            page.click(selector, timeout=1500)
+            for ch in digits:
+                page.keyboard.type(ch, delay=random.randint(20, 45))
+            final = str(page.locator(selector).first.input_value() or "")
+            if _phone_input_matches(final, digits):
+                log(f"  手机号逐位输入成功: {final[:16]}...")
+                return True
+        except Exception:
+            pass
+
+    return False
+
 def _select_phone_country_ui(page, dial_code: str, country_name: str, log) -> bool:
     """在 add-phone 页面的国家下拉框中选择对应国家。
 
@@ -2233,79 +2366,16 @@ def _do_add_phone_attempt(
     # ---- 第3步: 填写手机号 ----
     phone_input_sel = _wait_for_any_selector(page, PHONE_INPUT_SELECTORS, timeout=10)
     if phone_input_sel:
-        # 如果成功选了国家，输入本地号码；否则输入完整号码
-        fill_value = local_number if country_selected else phone_number
-        filled = _fill_input_like_user(page, phone_input_sel, fill_value)
-        # _fill_input_like_user 用严格相等验证，但 add-phone 页面可能在 input 中自动加了国家前缀
-        # 所以额外检查 input.value 是否包含我们填入的号码
-        if not filled:
-            try:
-                actual_val = str(page.evaluate(
-                    "(sel) => { const el = document.querySelector(sel); return el ? el.value : ''; }",
-                    phone_input_sel,
-                ) or "")
-                # 如果 input 值包含我们的号码（可能前面有 +56 之类的前缀），认为成功
-                if fill_value and fill_value in actual_val.replace(" ", "").replace("-", ""):
-                    filled = True
-                    log(f"  手机号已填写(含前缀): {actual_val[:12]}...")
-            except Exception:
-                pass
-        if not filled:
-            # fallback: 尝试先清空再用 keyboard.type 输入
-            log(f"  _fill_input_like_user 失败，尝试 keyboard fallback...")
-            try:
-                page.click(phone_input_sel)
-                time.sleep(0.3)
-                # 三次全选删除确保清空
-                for _ in range(3):
-                    page.keyboard.press("Meta+a")
-                    time.sleep(0.1)
-                    page.keyboard.press("Backspace")
-                    time.sleep(0.1)
-                page.keyboard.type(fill_value, delay=random.randint(30, 70))
-                time.sleep(0.3)
-                # 验证输入值
-                actual = page.evaluate(
-                    "(sel) => { const el = document.querySelector(sel); return el ? el.value : ''; }",
-                    phone_input_sel,
-                )
-                actual_clean = str(actual or "").replace(" ", "").replace("-", "")
-                if fill_value in actual_clean:
-                    filled = True
-                    log(f"  keyboard fallback 成功: {str(actual or '')[:12]}...")
-            except Exception as e:
-                log(f"  keyboard fallback 失败: {e}")
-        if not filled:
-            # 最终 fallback: 直接用 JS 设置值
-            try:
-                js_ok = page.evaluate(
-                    """
-                    ({ selector, value }) => {
-                      const input = document.querySelector(selector);
-                      if (!input) return false;
-                      input.focus();
-                      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
-                      if (setter) setter.call(input, value);
-                      else input.value = value;
-                      input.dispatchEvent(new Event('input', { bubbles: true }));
-                      input.dispatchEvent(new Event('change', { bubbles: true }));
-                      // 也触发 React 合成事件
-                      const nativeEvent = new Event('input', { bubbles: true });
-                      Object.defineProperty(nativeEvent, 'target', { writable: false, value: input });
-                      input.dispatchEvent(nativeEvent);
-                      return input.value.includes(value);
-                    }
-                    """,
-                    {"selector": phone_input_sel, "value": fill_value},
-                )
-                if js_ok:
-                    filled = True
-                    log(f"  JS setValue fallback 成功")
-            except Exception as e:
-                log(f"  JS setValue fallback 失败: {e}")
+        filled = _fill_phone_input(
+            page,
+            phone_input_sel,
+            local_number=local_number if country_selected else "",
+            full_number=phone_number,
+            log=log,
+        )
         if not filled:
             raise RuntimeError(f"手机号输入框填写失败: {phone_input_sel}")
-        log(f"  手机号输入框已填写: {phone_input_sel} value={fill_value[:4]}...")
+        log(f"  手机号输入框已确认: {phone_input_sel}")
     else:
         raise RuntimeError("未找到手机号输入框")
     _browser_pause(page)
