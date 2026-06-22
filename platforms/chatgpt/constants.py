@@ -92,7 +92,7 @@ OPENAI_API_ENDPOINTS = {
 
 # OpenAI 页面类型（用于判断账号状态）
 OPENAI_PAGE_TYPES = {
-    "EMAIL_OTP_VERIFICATION": "email_otp_verification",  # 已注册账号，需要 OTP 验证
+    "EMAIL_OTP_VERIFICATION": "email_otp_verification",  # 邮箱 OTP 验证页（新注册或登录均可能）
     "PASSWORD_REGISTRATION": "password",  # 新账号，需要设置密码
 }
 

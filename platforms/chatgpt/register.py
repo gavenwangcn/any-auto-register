@@ -12,6 +12,8 @@ import random
 import logging
 import secrets
 import string
+import functools
+from contextlib import contextmanager
 from typing import Optional, Dict, Any, Tuple, Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -40,6 +42,70 @@ from .constants import (
 
 
 logger = logging.getLogger(__name__)
+
+
+def _truncate_log_text(value: Any, limit: int = 400) -> str:
+    text = str(value or "")
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}...(+{len(text) - limit} chars)"
+
+
+def _sanitize_body_for_log(body: Any) -> str:
+    if body is None:
+        return ""
+    if isinstance(body, (dict, list)):
+        text = json.dumps(body, ensure_ascii=False)
+    else:
+        text = str(body)
+    text = re.sub(r'("password"\s*:\s*)"[^"]*"', r'\1"***"', text, flags=re.IGNORECASE)
+    text = re.sub(r'("code"\s*:\s*)"[^"]*"', r'\1"***"', text, flags=re.IGNORECASE)
+    text = re.sub(r'("token"\s*:\s*)"[^"]*"', r'\1"***"', text, flags=re.IGNORECASE)
+    text = re.sub(r'(csrfToken=)[^&]+', r'\1***', text, flags=re.IGNORECASE)
+    return _truncate_log_text(text, 500)
+
+
+def _traced_method(func: Callable):
+    """为 RegistrationEngine 方法记录进入/退出日志。"""
+
+    @functools.wraps(func)
+    def wrapper(self, *args, **kwargs):
+        method_name = func.__name__
+        arg_summary = ""
+        if args or kwargs:
+            safe_kwargs = {
+                k: ("***" if k in {"password", "code", "token"} else v)
+                for k, v in kwargs.items()
+            }
+            arg_bits = []
+            if args:
+                arg_bits.append(f"args={len(args)}")
+            if safe_kwargs:
+                arg_bits.append(f"kwargs={safe_kwargs}")
+            arg_summary = " " + ", ".join(arg_bits)
+        self._log(f"[{method_name}] ▶ 开始{arg_summary}")
+        try:
+            result = func(self, *args, **kwargs)
+            summary = "◀ 完成"
+            if isinstance(result, RegistrationResult):
+                summary = f"◀ 完成 success={result.success}"
+            elif isinstance(result, SignupFormResult):
+                summary = f"◀ 完成 success={result.success} page_type={result.page_type or '-'}"
+            elif isinstance(result, tuple):
+                summary = f"◀ 完成 result={result}"
+            elif isinstance(result, bool):
+                summary = f"◀ 完成 ok={result}"
+            elif result is None:
+                summary = "◀ 完成 (None)"
+            else:
+                summary = f"◀ 完成 type={type(result).__name__}"
+            self._log(f"[{method_name}] {summary}")
+            return result
+        except Exception as exc:
+            self._log(f"[{method_name}] ✗ 异常: {exc}", "error")
+            raise
+
+    return wrapper
 
 
 @dataclass
@@ -235,6 +301,8 @@ class RegistrationEngine:
         self.logs: list = []
         self._otp_sent_at: Optional[float] = None  # OTP 发送时间戳
         self._is_existing_account: bool = False  # 是否为已注册账号（用于自动登录）
+        self._skip_password_step: bool = False  # 提交邮箱后直接进入 OTP，无需密码页
+        self._signup_page_type: str = ""
         self._device_id: Optional[str] = None
         self._sentinel_token: Optional[str] = None
         self._signup_sentinel: Optional[SentinelPayload] = None
@@ -271,6 +339,62 @@ class RegistrationEngine:
         else:
             logger.info(message)
 
+    @contextmanager
+    def _trace_step(self, step: str, **context):
+        """注册主流程分步日志。"""
+        ctx = ""
+        if context:
+            ctx = " " + ", ".join(f"{k}={v}" for k, v in context.items())
+        self._log(f"[run] ▶ 步骤 {step}{ctx}")
+        try:
+            yield
+            self._log(f"[run] ◀ 步骤 {step} 完成")
+        except Exception as exc:
+            self._log(f"[run] ✗ 步骤 {step} 失败: {exc}", "error")
+            raise
+
+    def _http_call(
+        self,
+        session,
+        method: str,
+        url: str,
+        *,
+        label: str = "",
+        log_body: bool = False,
+        **kwargs,
+    ):
+        """统一 HTTP 请求并记录 URL / 状态 / 耗时。"""
+        method_upper = method.upper()
+        label_suffix = f" [{label}]" if label else ""
+        self._log(f"[HTTP] → {method_upper} {url}{label_suffix}")
+        if log_body:
+            body = kwargs.get("data")
+            if body is None:
+                body = kwargs.get("json")
+            if body is not None:
+                self._log(f"[HTTP] 请求体: {_sanitize_body_for_log(body)}")
+        started = time.time()
+        try:
+            response = getattr(session, method.lower())(url, **kwargs)
+        except Exception as exc:
+            elapsed_ms = int((time.time() - started) * 1000)
+            self._log(f"[HTTP] ✗ {method_upper} {url} 异常 ({elapsed_ms}ms): {exc}", "error")
+            raise
+        elapsed_ms = int((time.time() - started) * 1000)
+        location = ""
+        if hasattr(response, "headers"):
+            location = str(response.headers.get("Location") or response.headers.get("location") or "")
+        status = getattr(response, "status_code", "?")
+        tail = f" ({elapsed_ms}ms)"
+        if location:
+            tail += f" Location={_truncate_log_text(location, 160)}"
+        self._log(f"[HTTP] ← {method_upper} {url} -> {status}{tail}")
+        response_text = getattr(response, "text", "") or ""
+        if response_text:
+            if status >= 400 or '"page"' in response_text or '"continue_url"' in response_text:
+                self._log(f"[HTTP] 响应摘要: {_truncate_log_text(response_text, 400)}")
+        return response
+
     def _generate_password(self, length: int = DEFAULT_PASSWORD_LENGTH) -> str:
         """生成随机密码"""
         # OpenAI 注册页对纯字母数字密码存在更高概率拒绝，补一个符号位更稳。
@@ -285,31 +409,40 @@ class RegistrationEngine:
             + core
         )[:length]
 
+    @_traced_method
     def _load_create_account_password_page(self) -> bool:
         """预加载 create-account/password 页面，拿到页面阶段 cookie。"""
         try:
-            response = self.session.get(
-                "https://auth.openai.com/create-account/password",
+            url = "https://auth.openai.com/create-account/password"
+            response = self._http_call(
+                self.session,
+                "get",
+                url,
+                label="load_password_page",
                 headers={
                     "referer": "https://chatgpt.com/",
                     "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
                 },
                 timeout=20,
             )
-            self._log(f"加载密码页状态: {response.status_code}")
             return response.status_code == 200
         except Exception as e:
             self._log(f"加载密码页失败: {e}", "warning")
             return False
 
+    @_traced_method
     def _check_ip_location(self) -> Tuple[bool, Optional[str]]:
         """检查 IP 地理位置"""
         try:
-            return self.http_client.check_ip_location()
+            self._log("[HTTP] → GET https://cloudflare.com/cdn-cgi/trace [check_ip_location]")
+            ok, loc = self.http_client.check_ip_location()
+            self._log(f"[HTTP] ← check_ip_location -> ok={ok} loc={loc}")
+            return ok, loc
         except Exception as e:
             self._log(f"检查 IP 地理位置失败: {e}", "error")
             return False, None
 
+    @_traced_method
     def _create_email(self) -> bool:
         """创建邮箱"""
         try:
@@ -328,6 +461,7 @@ class RegistrationEngine:
             self._log(f"创建邮箱失败: {e}", "error")
             return False
 
+    @_traced_method
     def _start_oauth(self) -> bool:
         """通过 chatgpt.com NextAuth 发起 OAuth 流程"""
         try:
@@ -335,12 +469,13 @@ class RegistrationEngine:
             self._log("通过 chatgpt.com NextAuth 发起 OAuth...")
 
             # 1. 访问 chatgpt.com 获取基础 cookie
-            self.session.get(f"{CHATGPT_APP}/", timeout=15)
+            self._http_call(self.session, "get", f"{CHATGPT_APP}/", label="chatgpt_home", timeout=15)
             oai_did = self.session.cookies.get("oai-did", "")
             self._log(f"chatgpt.com oai-did: {oai_did[:20]}...")
 
             # 2. 获取 CSRF token
-            csrf_resp = self.session.get(f"{CHATGPT_APP}/api/auth/csrf", timeout=15)
+            csrf_url = f"{CHATGPT_APP}/api/auth/csrf"
+            csrf_resp = self._http_call(self.session, "get", csrf_url, label="nextauth_csrf", timeout=15)
             csrf_data = csrf_resp.json()
             csrf_token = csrf_data.get("csrfToken", "")
             if not csrf_token:
@@ -354,17 +489,21 @@ class RegistrationEngine:
             if oai_did:
                 signin_url += f"?prompt=login&ext-oai-did={oai_did}"
 
-            signin_resp = self.session.post(
+            signin_data_body = f"callbackUrl={CHATGPT_APP}%2F&csrfToken={csrf_token}&json=true"
+            signin_resp = self._http_call(
+                self.session,
+                "post",
                 signin_url,
+                label="nextauth_signin_openai",
                 headers={
                     "content-type": "application/x-www-form-urlencoded",
                     "origin": CHATGPT_APP,
                     "referer": f"{CHATGPT_APP}/",
                 },
-                data=f"callbackUrl={CHATGPT_APP}%2F&csrfToken={csrf_token}&json=true",
+                data=signin_data_body,
+                log_body=True,
                 timeout=15,
             )
-            self._log(f"signin/openai 状态: {signin_resp.status_code}")
 
             if signin_resp.status_code != 200:
                 self._log(f"signin/openai 失败: {signin_resp.text[:200]}", "error")
@@ -391,24 +530,31 @@ class RegistrationEngine:
             self._log(f"NextAuth OAuth 流程失败: {e}", "error")
             return False
 
+    @_traced_method
+    @_traced_method
     def _init_session(self) -> bool:
         """初始化会话"""
         try:
             self.session = self.http_client.session
+            self._log(f"会话已绑定 HTTP 客户端 (proxy={self.proxy_url or 'direct'})")
             return True
         except Exception as e:
             self._log(f"初始化会话失败: {e}", "error")
             return False
 
+    @_traced_method
     def _get_device_id(self) -> Optional[str]:
         """获取 Device ID"""
         try:
             if not self.oauth_start:
                 return None
 
-            response = self.session.get(
+            self._http_call(
+                self.session,
+                "get",
                 self.oauth_start.auth_url,
-                timeout=15
+                label="oauth_authorize",
+                timeout=15,
             )
             did = self.session.cookies.get("oai-did")
             self._log(f"Device ID: {did}")
@@ -418,6 +564,7 @@ class RegistrationEngine:
             self._log(f"获取 Device ID 失败: {e}", "error")
             return None
 
+    @_traced_method
     def _check_sentinel(self, did: str, *, flow: str = "authorize_continue") -> Optional[SentinelPayload]:
         """检查 Sentinel 拦截（动态生成 token + 处理 PoW）"""
         try:
@@ -427,14 +574,18 @@ class RegistrationEngine:
             sen_req_body = json.dumps({"p": sent_p, "id": did, "flow": flow}, separators=(",", ":"))
 
             from .constants import SENTINEL_FRAME_URL
-            response = self.http_client.post(
+            response = self._http_call(
+                self.http_client.session,
+                "post",
                 OPENAI_API_ENDPOINTS["sentinel"],
+                label=f"sentinel_{flow}",
                 headers={
                     "origin": "https://sentinel.openai.com",
                     "referer": SENTINEL_FRAME_URL,
                     "content-type": "text/plain;charset=UTF-8",
                 },
                 data=sen_req_body,
+                log_body=True,
             )
 
             if response.status_code == 200:
@@ -480,6 +631,7 @@ class RegistrationEngine:
             self._log(f"Sentinel 检查异常: flow={flow} {e}", "warning")
             return None
 
+    @_traced_method
     def _submit_signup_form(self, did: str, sen_payload: Optional[SentinelPayload]) -> SignupFormResult:
         """
         提交注册表单（通过 authorize/continue 建立 session）
@@ -492,6 +644,7 @@ class RegistrationEngine:
             self._signup_sentinel = sen_payload
             self._sentinel_token = sen_payload.c if sen_payload else None
             signup_body = f'{{"username":{{"value":"{self.email}","kind":"email"}},"screen_hint":"signup"}}'
+            self._log(f"提交注册表单邮箱: {self.email}")
 
             headers = {
                 "referer": "https://auth.openai.com/create-account",
@@ -509,13 +662,15 @@ class RegistrationEngine:
                 }, separators=(",", ":"))
                 headers["openai-sentinel-token"] = sentinel
 
-            response = self.session.post(
+            response = self._http_call(
+                self.session,
+                "post",
                 OPENAI_API_ENDPOINTS["signup"],
+                label="authorize_continue_signup",
                 headers=headers,
                 data=signup_body,
+                log_body=True,
             )
-
-            self._log(f"提交注册表单状态: {response.status_code}")
 
             if response.status_code != 200:
                 return SignupFormResult(
@@ -526,17 +681,20 @@ class RegistrationEngine:
             try:
                 response_data = response.json()
                 page_type = response_data.get("page", {}).get("type", "")
+                self._signup_page_type = page_type
                 self._log(f"响应页面类型: {page_type}")
 
-                is_existing = page_type == OPENAI_PAGE_TYPES["EMAIL_OTP_VERIFICATION"]
-                if is_existing:
-                    self._log(f"检测到已注册账号，将自动切换到登录流程")
-                    self._is_existing_account = True
+                if page_type in (
+                    OPENAI_PAGE_TYPES["EMAIL_OTP_VERIFICATION"],
+                    "email_otp_send",
+                ):
+                    self._skip_password_step = True
+                    self._log("提交邮箱后直接进入验证码流程，将跳过密码设置")
 
                 return SignupFormResult(
                     success=True,
                     page_type=page_type,
-                    is_existing_account=is_existing,
+                    is_existing_account=False,
                     response_data=response_data
                 )
 
@@ -548,6 +706,7 @@ class RegistrationEngine:
             self._log(f"提交注册表单失败: {e}", "error")
             return SignupFormResult(success=False, error_message=str(e))
 
+    @_traced_method
     def _register_password(self) -> Tuple[bool, Optional[str]]:
         """注册密码"""
         try:
@@ -607,13 +766,15 @@ class RegistrationEngine:
                         "flow": self._password_sentinel.flow,
                     }, separators=(",", ":"))
 
-                response = self.session.post(
+                response = self._http_call(
+                    self.session,
+                    "post",
                     OPENAI_API_ENDPOINTS["register"],
+                    label=f"user_register_{index}",
                     headers=register_headers,
                     data=register_body,
+                    log_body=True,
                 )
-
-                self._log(f"提交密码状态[{index}/{len(candidates)}]: {response.status_code}")
 
                 if response.status_code == 200:
                     # 解析响应，检测已注册账号
@@ -621,9 +782,6 @@ class RegistrationEngine:
                         resp_data = response.json()
                         page_type = resp_data.get("page", {}).get("type", "")
                         self._log(f"注册响应页面类型: {page_type}")
-                        if page_type == OPENAI_PAGE_TYPES.get("EMAIL_OTP_VERIFICATION", "email_otp_verification"):
-                            self._log("检测到已注册账号，自动切换到登录流程")
-                            self._is_existing_account = True
                     except Exception:
                         pass
                     return True, password
@@ -670,31 +828,45 @@ class RegistrationEngine:
         except Exception as e:
             logger.warning(f"标记邮箱状态失败: {e}")
 
-    def _send_verification_code(self) -> bool:
-        """发送验证码"""
+    @_traced_method
+    def _request_send_otp(self, session=None, *, skip_password: bool | None = None) -> bool:
+        """请求 OpenAI 发送邮箱 OTP。协议流必须显式调用，不能依赖页面自动触发。"""
         try:
-            # 记录发送时间戳
+            sess = session or self.session
+            if not sess:
+                return False
             self._otp_sent_at = time.time()
-
-            response = self.session.get(
+            use_skip_password = self._skip_password_step if skip_password is None else skip_password
+            referer = (
+                "https://auth.openai.com/email-verification"
+                if use_skip_password
+                else "https://auth.openai.com/create-account/password"
+            )
+            response = self._http_call(
+                sess,
+                "get",
                 OPENAI_API_ENDPOINTS["send_otp"],
+                label="email_otp_send",
                 headers={
-                    "referer": "https://auth.openai.com/create-account/password",
+                    "referer": referer,
                     "accept": "application/json",
                 },
             )
-
-            self._log(f"验证码发送状态: {response.status_code}")
             return response.status_code == 200
-
         except Exception as e:
             self._log(f"发送验证码失败: {e}", "error")
             return False
 
+    @_traced_method
+    def _send_verification_code(self) -> bool:
+        """发送验证码"""
+        return self._request_send_otp()
+
+    @_traced_method
     def _get_verification_code(self) -> Optional[str]:
         """获取验证码"""
         try:
-            self._log(f"正在等待邮箱 {self.email} 的验证码...")
+            self._log(f"正在等待邮箱 {self.email} 的验证码... (otp_sent_at={self._otp_sent_at})")
 
             email_id = self.email_info.get("service_id") if self.email_info else None
             code = self.email_service.get_verification_code(
@@ -716,22 +888,26 @@ class RegistrationEngine:
             self._log(f"获取验证码失败: {e}", "error")
             return None
 
+    @_traced_method
     def _validate_verification_code(self, code: str) -> bool:
         """验证验证码"""
         try:
             code_body = f'{{"code":"{code}"}}'
 
-            response = self.session.post(
+            response = self._http_call(
+                self.session,
+                "post",
                 OPENAI_API_ENDPOINTS["validate_otp"],
+                label="email_otp_validate",
                 headers={
                     "referer": "https://auth.openai.com/email-verification",
                     "accept": "application/json",
                     "content-type": "application/json",
                 },
                 data=code_body,
+                log_body=True,
             )
 
-            self._log(f"验证码校验状态: {response.status_code}")
             if response.status_code != 200:
                 self._log(f"验证码校验响应: {response.text[:300]}", "warning")
                 return False
@@ -751,6 +927,7 @@ class RegistrationEngine:
             self._log(f"验证验证码失败: {e}", "error")
             return False
 
+    @_traced_method
     def _create_user_account(self) -> bool:
         """创建用户账户"""
         try:
@@ -760,15 +937,17 @@ class RegistrationEngine:
 
             # 调 client_auth_session_dump 推进服务器 auth 状态机
             try:
-                dump_resp = self.session.get(
+                dump_resp = self._http_call(
+                    self.session,
+                    "get",
                     "https://auth.openai.com/api/accounts/client_auth_session_dump",
+                    label="client_auth_session_dump",
                     headers={
                         "referer": "https://auth.openai.com/email-verification",
                         "accept": "application/json",
                     },
                     timeout=20,
                 )
-                self._log(f"client_auth_session_dump 状态: {dump_resp.status_code}")
             except Exception as e:
                 self._log(f"client_auth_session_dump 异常: {e}", "warning")
 
@@ -796,13 +975,15 @@ class RegistrationEngine:
                     }, separators=(",", ":"))
                     self._log(f"create_account Sentinel 已获取: flow={ca_sentinel.flow}")
 
-            response = self.session.post(
+            response = self._http_call(
+                self.session,
+                "post",
                 OPENAI_API_ENDPOINTS["create_account"],
+                label="create_account",
                 headers=create_headers,
                 data=create_account_body,
+                log_body=True,
             )
-
-            self._log(f"账户创建状态: {response.status_code}")
 
             if response.status_code != 200:
                 self._log(f"账户创建失败: {response.text[:200]}", "warning")
@@ -823,6 +1004,7 @@ class RegistrationEngine:
             self._log(f"创建账户失败: {e}", "error")
             return False
 
+    @_traced_method
     def _acquire_codex_callback(self) -> Optional[str]:
         """
         注册完成后，通过 Codex CLI OAuth 完整登录流程获取 callback URL。
@@ -850,7 +1032,7 @@ class RegistrationEngine:
             self._codex_oauth = codex_oauth
 
             # 3. 访问 authorize URL 获取 device_id + session cookies
-            response = login_session.get(codex_oauth.auth_url, timeout=15)
+            self._http_call(login_session, "get", codex_oauth.auth_url, label="codex_authorize", timeout=15)
             did = login_session.cookies.get("oai-did")
             self._log(f"Codex login device_id: {did}")
             if not did:
@@ -866,14 +1048,18 @@ class RegistrationEngine:
                 sen_req_body = json.dumps({"p": sent_p, "id": did, "flow": "authorize_continue"}, separators=(",", ":"))
 
                 from .constants import SENTINEL_FRAME_URL
-                sen_resp = login_client.post(
+                sen_resp = self._http_call(
+                    login_client.session,
+                    "post",
                     OPENAI_API_ENDPOINTS["sentinel"],
+                    label="codex_login_sentinel",
                     headers={
                         "origin": "https://sentinel.openai.com",
                         "referer": SENTINEL_FRAME_URL,
                         "content-type": "text/plain;charset=UTF-8",
                     },
                     data=sen_req_body,
+                    log_body=True,
                 )
                 if sen_resp.status_code == 200:
                     data = sen_resp.json()
@@ -909,8 +1095,15 @@ class RegistrationEngine:
                     "id": did, "flow": sen_payload.flow,
                 }, separators=(",", ":"))
 
-            resp = login_session.post(OPENAI_API_ENDPOINTS["signup"], headers=headers, data=signup_body)
-            self._log(f"Codex login authorize/continue: {resp.status_code}")
+            resp = self._http_call(
+                login_session,
+                "post",
+                OPENAI_API_ENDPOINTS["signup"],
+                label="codex_login_authorize_continue",
+                headers=headers,
+                data=signup_body,
+                log_body=True,
+            )
             if resp.status_code != 200:
                 self._log(f"Codex login authorize/continue 失败: {resp.text[:200]}", "error")
                 return None
@@ -919,10 +1112,12 @@ class RegistrationEngine:
             page_type = resp_data.get("page", {}).get("type", "")
             self._log(f"Codex login page_type: {page_type}")
 
-            # 6. 如果需要 OTP，等待第二次验证码
-            if page_type == "email_otp_verification":
+            # 6. 如果需要 OTP，先显式发送再等待验证码
+            if page_type in ("email_otp_verification", "email_otp_send"):
+                if not self._request_send_otp(login_session, skip_password=True):
+                    self._log("Codex login 发送验证码失败", "error")
+                    return None
                 self._log("等待第二次验证码...")
-                self._otp_sent_at = time.time()
                 code = self._get_verification_code()
                 if not code:
                     self._log("Codex login 获取验证码失败", "error")
@@ -930,16 +1125,19 @@ class RegistrationEngine:
 
                 # 验证 OTP
                 code_body = f'{{"code":"{code}"}}'
-                otp_resp = login_session.post(
+                otp_resp = self._http_call(
+                    login_session,
+                    "post",
                     OPENAI_API_ENDPOINTS["validate_otp"],
+                    label="codex_login_validate_otp",
                     headers={
                         "referer": "https://auth.openai.com/email-verification",
                         "accept": "application/json",
                         "content-type": "application/json",
                     },
                     data=code_body,
+                    log_body=True,
                 )
-                self._log(f"Codex login OTP 校验: {otp_resp.status_code}")
                 if otp_resp.status_code != 200:
                     self._log(f"Codex login OTP 失败: {otp_resp.text[:200]}", "error")
                     return None
@@ -960,7 +1158,13 @@ class RegistrationEngine:
                     return None
 
                 # 加载密码页获取 sentinel
-                login_session.get(f"{OPENAI_AUTH}/log-in/password", timeout=15)
+                self._http_call(
+                    login_session,
+                    "get",
+                    f"{OPENAI_AUTH}/log-in/password",
+                    label="codex_login_password_page",
+                    timeout=15,
+                )
                 pwd_sentinel = None
                 try:
                     ua2 = login_client.default_headers.get("User-Agent", "")
@@ -968,10 +1172,14 @@ class RegistrationEngine:
                     sp2 = gen2.generate_requirements_token()
                     sr2 = json.dumps({"p": sp2, "id": did, "flow": "login_password"}, separators=(",", ":"))
                     from .constants import SENTINEL_FRAME_URL as SF2
-                    sr2_resp = login_client.post(
+                    sr2_resp = self._http_call(
+                        login_client.session,
+                        "post",
                         OPENAI_API_ENDPOINTS["sentinel"],
+                        label="codex_login_password_sentinel",
                         headers={"origin": "https://sentinel.openai.com", "referer": SF2, "content-type": "text/plain;charset=UTF-8"},
                         data=sr2,
+                        log_body=True,
                     )
                     if sr2_resp.status_code == 200:
                         d2 = sr2_resp.json()
@@ -1002,9 +1210,15 @@ class RegistrationEngine:
                         "id": did, "flow": pwd_sentinel.flow,
                     }, separators=(",", ":"))
 
-                pwd_body = json.dumps({"password": self.password, "username": self.email})
-                pwd_resp = login_session.post(OPENAI_API_ENDPOINTS["register"], headers=pwd_headers, data=pwd_body)
-                self._log(f"Codex login 密码提交: {pwd_resp.status_code}")
+                pwd_resp = self._http_call(
+                    login_session,
+                    "post",
+                    OPENAI_API_ENDPOINTS["register"],
+                    label="codex_login_password_submit",
+                    headers=pwd_headers,
+                    data=pwd_body,
+                    log_body=True,
+                )
                 if pwd_resp.status_code != 200:
                     self._log(f"Codex login 密码失败: {pwd_resp.text[:200]}", "error")
                     return None
@@ -1014,24 +1228,25 @@ class RegistrationEngine:
                 self._log(f"Codex login 密码 -> page_type={pwd_page}")
 
                 # 密码后可能需要 OTP
-                if pwd_page == "email_otp_verification" or pwd_page == "email_otp_send":
-                    if pwd_page == "email_otp_send":
-                        login_session.get(OPENAI_API_ENDPOINTS["send_otp"], headers={
-                            "referer": f"{OPENAI_AUTH}/email-verification",
-                        }, timeout=15)
+                if pwd_page in ("email_otp_verification", "email_otp_send"):
+                    if not self._request_send_otp(login_session, skip_password=False):
+                        self._log("Codex login 发送验证码失败", "error")
+                        return None
                     self._log("Codex login: 等待验证码...")
-                    self._otp_sent_at = time.time()
                     code = self._get_verification_code()
                     if not code:
                         self._log("Codex login 获取验证码失败", "error")
                         return None
                     code_body = f'{{"code":"{code}"}}'
-                    otp_resp = login_session.post(
+                    otp_resp = self._http_call(
+                        login_session,
+                        "post",
                         OPENAI_API_ENDPOINTS["validate_otp"],
+                        label="codex_login_password_validate_otp",
                         headers={"referer": f"{OPENAI_AUTH}/email-verification", "accept": "application/json", "content-type": "application/json"},
                         data=code_body,
+                        log_body=True,
                     )
-                    self._log(f"Codex login OTP: {otp_resp.status_code}")
                     if otp_resp.status_code != 200:
                         self._log(f"Codex login OTP 失败: {otp_resp.text[:200]}", "error")
                         return None
@@ -1044,7 +1259,14 @@ class RegistrationEngine:
 
             # 8. 重新访问 authorize URL 获取回调
             self._log("Codex login: 重新访问 OAuth URL 获取回调...")
-            response = login_session.get(codex_oauth.auth_url, allow_redirects=False, timeout=15)
+            response = self._http_call(
+                login_session,
+                "get",
+                codex_oauth.auth_url,
+                label="codex_login_oauth_redirect_start",
+                allow_redirects=False,
+                timeout=15,
+            )
             max_redirects = 10
             current_url = codex_oauth.auth_url
             for i in range(max_redirects):
@@ -1059,7 +1281,14 @@ class RegistrationEngine:
                     self._log("找到 Codex CLI 回调 URL")
                     return next_url
                 current_url = next_url
-                response = login_session.get(current_url, allow_redirects=False, timeout=15)
+                response = self._http_call(
+                    login_session,
+                    "get",
+                    current_url,
+                    label=f"codex_login_oauth_redirect_{i + 1}",
+                    allow_redirects=False,
+                    timeout=15,
+                )
 
             self._log(f"Codex login 最终: status={response.status_code}, url={current_url[:100]}", "warning")
             return None
@@ -1068,6 +1297,7 @@ class RegistrationEngine:
             self._log(f"Codex CLI 登录流程失败: {e}", "error")
             return None
 
+    @_traced_method
     def _get_workspace_id(self) -> Optional[str]:
         """获取 Workspace ID"""
         try:
@@ -1113,18 +1343,23 @@ class RegistrationEngine:
             self._log(f"获取 Workspace ID 失败: {e}", "error")
             return None
 
+    @_traced_method
     def _select_workspace(self, workspace_id: str) -> Optional[str]:
         """选择 Workspace"""
         try:
             select_body = f'{{"workspace_id":"{workspace_id}"}}'
 
-            response = self.session.post(
+            response = self._http_call(
+                self.session,
+                "post",
                 OPENAI_API_ENDPOINTS["select_workspace"],
+                label="select_workspace",
                 headers={
                     "referer": "https://auth.openai.com/sign-in-with-chatgpt/codex/consent",
                     "content-type": "application/json",
                 },
                 data=select_body,
+                log_body=True,
             )
 
             if response.status_code != 200:
@@ -1144,6 +1379,7 @@ class RegistrationEngine:
             self._log(f"选择 Workspace 失败: {e}", "error")
             return None
 
+    @_traced_method
     def _follow_redirects(self, start_url: str) -> Optional[str]:
         """跟随重定向链，寻找回调 URL"""
         try:
@@ -1153,10 +1389,13 @@ class RegistrationEngine:
             for i in range(max_redirects):
                 self._log(f"重定向 {i+1}/{max_redirects}: {current_url[:100]}...")
 
-                response = self.session.get(
+                response = self._http_call(
+                    self.session,
+                    "get",
                     current_url,
+                    label=f"follow_redirect_{i + 1}",
                     allow_redirects=False,
-                    timeout=15
+                    timeout=15,
                 )
 
                 location = response.headers.get("Location") or ""
@@ -1188,6 +1427,7 @@ class RegistrationEngine:
             self._log(f"跟随重定向失败: {e}", "error")
             return None
 
+    @_traced_method
     def _handle_oauth_callback(self, callback_url: str) -> Optional[Dict[str, Any]]:
         """处理 OAuth 回调"""
         try:
@@ -1195,7 +1435,7 @@ class RegistrationEngine:
                 self._log("OAuth 流程未初始化", "error")
                 return None
 
-            self._log("处理 OAuth 回调...")
+            self._log(f"处理 OAuth 回调 URL: {callback_url[:160]}...")
             token_info = self.oauth_manager.handle_callback(
                 callback_url=callback_url,
                 expected_state=self.oauth_start.state,
@@ -1209,6 +1449,7 @@ class RegistrationEngine:
             self._log(f"处理 OAuth 回调失败: {e}", "error")
             return None
 
+    @_traced_method
     def run(self) -> RegistrationResult:
         """
         执行完整的注册流程
@@ -1226,6 +1467,10 @@ class RegistrationEngine:
         try:
             self._log("=" * 60)
             self._log("开始注册流程")
+            self._log(
+                f"运行参数: email={self.email or '-'} proxy={self.proxy_url or 'direct'} "
+                f"provider={getattr(self.email_service.service_type, 'value', '-')}"
+            )
             self._log("=" * 60)
 
             # 1. 检查 IP 地理位置
@@ -1280,9 +1525,9 @@ class RegistrationEngine:
                 result.error_message = f"提交注册表单失败: {signup_result.error_message}"
                 return result
 
-            # 8. [已注册账号跳过] 注册密码
-            if self._is_existing_account:
-                self._log("8. [已注册账号] 跳过密码设置，OTP 已自动发送")
+            # 8. 注册密码（提交邮箱后若已进入 OTP 页则跳过）
+            if self._skip_password_step:
+                self._log("8. 跳过密码设置（已进入验证码流程）")
             else:
                 self._log("8. 注册密码...")
                 password_ok, password = self._register_password()
@@ -1290,16 +1535,11 @@ class RegistrationEngine:
                     result.error_message = "注册密码失败"
                     return result
 
-            # 9. [已注册账号跳过] 发送验证码
-            if self._is_existing_account:
-                self._log("9. [已注册账号] 跳过发送验证码，使用自动发送的 OTP")
-                # 已注册账号的 OTP 在提交表单时已自动发送，记录时间戳
-                self._otp_sent_at = time.time()
-            else:
-                self._log("9. 发送验证码...")
-                if not self._send_verification_code():
-                    result.error_message = "发送验证码失败"
-                    return result
+            # 9. 发送验证码（协议流不会加载验证码页，必须显式调用 send_otp）
+            self._log("9. 发送验证码...")
+            if not self._send_verification_code():
+                result.error_message = "发送验证码失败"
+                return result
 
             # 10. 获取验证码
             self._log("10. 等待验证码...")
@@ -1315,8 +1555,15 @@ class RegistrationEngine:
                 return result
 
             # 12. 根据 OTP 响应决定下一步
-            if self._otp_page_type == "about_you" and not self._is_existing_account:
-                # 正常注册流程: about_you → create_account
+            if (
+                self._skip_password_step
+                and self._otp_page_type
+                and self._otp_page_type != "about_you"
+            ):
+                self._is_existing_account = True
+                self._log("验证码校验后判定为已注册账号登录流程")
+
+            if self._otp_page_type == "about_you":
                 self._log("12. 创建用户账户...")
                 if not self._create_user_account():
                     result.error_message = "创建用户账户失败"
@@ -1330,14 +1577,20 @@ class RegistrationEngine:
                     return result
 
             # 13. 跟随 callback URL 到 chatgpt.com 获取 session
-            callback_url = self._create_account_continue_url
+            callback_url = self._create_account_continue_url or self._otp_continue_url
             if not callback_url or "code=" not in str(callback_url):
                 result.error_message = "create_account 未返回有效的 callback URL"
                 return result
 
             self._log("13. 跟随 callback URL 到 chatgpt.com...")
-            cb_resp = self.session.get(callback_url, timeout=20)
-            self._log(f"callback 状态: {cb_resp.status_code}")
+            self._log(f"callback URL: {str(callback_url)[:200]}")
+            cb_resp = self._http_call(
+                self.session,
+                "get",
+                callback_url,
+                label="chatgpt_oauth_callback",
+                timeout=20,
+            )
 
             # 提取 session cookie
             session_token = self.session.cookies.get("__Secure-next-auth.session-token")
@@ -1350,12 +1603,15 @@ class RegistrationEngine:
             # 14. 从 chatgpt.com/api/auth/session 获取 access_token
             from .constants import CHATGPT_APP
             self._log("14. 获取 session 信息...")
-            session_resp = self.session.get(
-                f"{CHATGPT_APP}/api/auth/session",
+            session_url = f"{CHATGPT_APP}/api/auth/session"
+            session_resp = self._http_call(
+                self.session,
+                "get",
+                session_url,
+                label="chatgpt_auth_session",
                 headers={"accept": "application/json"},
                 timeout=15,
             )
-            self._log(f"session API 状态: {session_resp.status_code}")
             self._log(f"session API 响应: {session_resp.text[:500]}")
 
             session_data = session_resp.json()
@@ -1391,7 +1647,7 @@ class RegistrationEngine:
                 login_session = login_client.session
 
                 # 访问 Codex OAuth URL，跟随重定向到 /log-in
-                login_session.get(codex_oauth.auth_url, timeout=15)
+                self._http_call(login_session, "get", codex_oauth.auth_url, label="run_codex_authorize", timeout=15)
                 did2 = login_session.cookies.get("oai-did", "")
                 self._log(f"Codex login did: {did2[:20]}...")
 
@@ -1402,10 +1658,14 @@ class RegistrationEngine:
                     gen2 = _SentinelTokenGenerator(did2, ua2)
                     sp2 = gen2.generate_requirements_token()
                     sr2 = json.dumps({"p": sp2, "id": did2, "flow": "authorize_continue"}, separators=(",", ":"))
-                    sr2_resp = login_client.post(
+                    sr2_resp = self._http_call(
+                        login_client.session,
+                        "post",
                         OPENAI_API_ENDPOINTS["sentinel"],
+                        label="run_codex_sentinel",
                         headers={"origin": "https://sentinel.openai.com", "referer": SENTINEL_FRAME_URL, "content-type": "text/plain;charset=UTF-8"},
                         data=sr2,
+                        log_body=True,
                     )
                     if sr2_resp.status_code == 200:
                         d2 = sr2_resp.json()
@@ -1435,10 +1695,15 @@ class RegistrationEngine:
                     }, separators=(",", ":"))
 
                 signup_body = json.dumps({"username": {"value": self.email, "kind": "email"}, "screen_hint": "signup"})
-                signup_resp = login_session.post(
-                    OPENAI_API_ENDPOINTS["signup"], headers=signup_headers, data=signup_body
+                signup_resp = self._http_call(
+                    login_session,
+                    "post",
+                    OPENAI_API_ENDPOINTS["signup"],
+                    label="run_codex_authorize_continue",
+                    headers=signup_headers,
+                    data=signup_body,
+                    log_body=True,
                 )
-                self._log(f"Codex authorize/continue: {signup_resp.status_code}")
                 if signup_resp.status_code != 200:
                     raise RuntimeError(f"authorize/continue 失败: {signup_resp.text[:200]}")
 
@@ -1447,31 +1712,29 @@ class RegistrationEngine:
 
                 # 如果返回 email_otp_send 或 email_otp_verification，走 OTP 流程
                 if page_type in ("email_otp_send", "email_otp_verification"):
-                    # 发送 OTP
-                    if page_type == "email_otp_send":
-                        login_session.get(OPENAI_API_ENDPOINTS["send_otp"], headers={
-                            "referer": f"{OPENAI_AUTH}/email-verification",
-                        }, timeout=15)
-                        self._log("Codex OTP 已发送")
+                    if not self._request_send_otp(login_session, skip_password=True):
+                        raise RuntimeError("Codex OTP 发送失败")
+                    self._log("Codex OTP 已发送")
 
-                    # 等待 OTP
-                    self._otp_sent_at = time.time()
                     code = self._get_verification_code()
                     if not code:
                         raise RuntimeError("Codex OTP 获取失败")
                     self._log(f"Codex OTP: {code}")
 
                     # 验证 OTP
-                    otp_resp = login_session.post(
+                    otp_resp = self._http_call(
+                        login_session,
+                        "post",
                         OPENAI_API_ENDPOINTS["validate_otp"],
+                        label="run_codex_validate_otp",
                         headers={
                             "referer": f"{OPENAI_AUTH}/email-verification",
                             "accept": "application/json",
                             "content-type": "application/json",
                         },
                         data=json.dumps({"code": code}),
+                        log_body=True,
                     )
-                    self._log(f"Codex OTP validate: {otp_resp.status_code}")
                     if otp_resp.status_code != 200:
                         raise RuntimeError(f"Codex OTP 验证失败: {otp_resp.text[:200]}")
 
@@ -1485,7 +1748,14 @@ class RegistrationEngine:
 
                     # OTP 成功后，重新访问 OAuth URL 获取 callback
                     self._log("Codex: 重新访问 OAuth URL...")
-                    resp = login_session.get(codex_oauth.auth_url, allow_redirects=False, timeout=15)
+                    resp = self._http_call(
+                        login_session,
+                        "get",
+                        codex_oauth.auth_url,
+                        label="run_codex_oauth_redirect_start",
+                        allow_redirects=False,
+                        timeout=15,
+                    )
                     codex_callback = None
                     current_url = codex_oauth.auth_url
                     for i in range(15):
@@ -1500,7 +1770,14 @@ class RegistrationEngine:
                             codex_callback = next_url
                             break
                         current_url = next_url
-                        resp = login_session.get(current_url, allow_redirects=False, timeout=15)
+                        resp = self._http_call(
+                            login_session,
+                            "get",
+                            current_url,
+                            label=f"run_codex_oauth_redirect_{i + 1}",
+                            allow_redirects=False,
+                            timeout=15,
+                        )
 
                     if codex_callback:
                         self._log("Codex CLI callback 获取成功")

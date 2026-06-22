@@ -1,12 +1,20 @@
 """邮箱池基类 - 抽象临时邮箱/收件服务"""
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from typing import Callable
 import html
 import logging
 import re
 from urllib.parse import urlencode, urlparse
 
 logger = logging.getLogger(__name__)
+
+
+def _truncate_mailbox_log(value, limit: int = 300) -> str:
+    text = str(value or "")
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}...(+{len(text) - limit} chars)"
 
 from core.tls import insecure_request, mark_session_insecure, suppress_insecure_request_warning
 
@@ -1129,6 +1137,7 @@ class SkyMailMailbox(BaseMailbox):
         self.proxy = {"http": proxy, "https": proxy} if proxy else None
         self.persist_token = persist_token
         self.provider_key = str(provider_key or "").strip()
+        self._trace_log: Callable[[str], None] | None = None
         if refresh_on_init and self.email and self.password and not self.auth_token:
             self._refresh_token(force=True)
 
@@ -1203,17 +1212,37 @@ class SkyMailMailbox(BaseMailbox):
         api_code = self._api_error_code(response)
         return api_code in (401, 403)
 
+    def _skymail_trace(self, message: str) -> None:
+        line = f"[SkyMail] {message}"
+        print(line)
+        logger.info(line)
+        trace_log = getattr(self, "_trace_log", None)
+        if trace_log:
+            try:
+                trace_log(line)
+            except Exception:
+                pass
+
     def _post_json(self, path: str, payload: dict, *, retry_auth: bool = True):
         import requests
+        import time as _time
 
         self._ensure_config()
         url = f"{self.api}{path}"
+        self._skymail_trace(f"[HTTP] → POST {url}")
+        self._skymail_trace(f"[HTTP] 请求体: {_truncate_mailbox_log(payload, 300)}")
+        started = _time.time()
         response = requests.post(
             url,
             json=payload,
             headers=self._headers(),
             proxies=self.proxy,
             timeout=15,
+        )
+        elapsed_ms = int((_time.time() - started) * 1000)
+        self._skymail_trace(
+            f"[HTTP] ← POST {url} -> {response.status_code} ({elapsed_ms}ms) "
+            f"body={_truncate_mailbox_log(response.text, 300)}"
         )
         if retry_auth and self._should_retry_auth(response) and self._refresh_token(force=True):
             response = requests.post(
@@ -1269,8 +1298,10 @@ class SkyMailMailbox(BaseMailbox):
     def _list_mails(self, email: str) -> list:
         payload = {
             "toEmail": email,
+            "type": 0,
             "num": 1,
             "size": 20,
+            "timeSort": "desc",
         }
         r = self._post_json("/api/public/emailList", payload, retry_auth=True)
         if r.status_code != 200:
@@ -1280,22 +1311,27 @@ class SkyMailMailbox(BaseMailbox):
             return []
         return data.get("data") or []
 
+    @staticmethod
+    def _mail_message_id(msg: dict, index: int) -> str:
+        mid = (
+            msg.get("emailId")
+            or msg.get("id")
+            or msg.get("mailId")
+            or msg.get("messageId")
+        )
+        if mid:
+            return str(mid)
+        digest = (
+            str(msg.get("createTime") or msg.get("date") or msg.get("time") or "")
+            + "|"
+            + str(msg.get("subject") or "")
+        )
+        return f"idx-{index}-{digest}"
+
     def get_current_ids(self, account: MailboxAccount) -> set:
         try:
             mails = self._list_mails(account.account_id or account.email)
-            ids = set()
-            for i, msg in enumerate(mails):
-                mid = msg.get("id") or msg.get("mailId") or msg.get("messageId")
-                if mid:
-                    ids.add(str(mid))
-                else:
-                    digest = (
-                        str(msg.get("date") or msg.get("time") or "")
-                        + "|"
-                        + str(msg.get("subject") or "")
-                    )
-                    ids.add(f"idx-{i}-{digest}")
-            return ids
+            return {self._mail_message_id(msg, i) for i, msg in enumerate(mails)}
         except Exception:
             return set()
 
@@ -1336,19 +1372,16 @@ class SkyMailMailbox(BaseMailbox):
         target = account.account_id or account.email
         seen = set(before_ids or [])
         start = time.time()
+        poll_round = 0
         while time.time() - start < timeout:
+            poll_round += 1
+            elapsed = int(time.time() - start)
+            self._skymail_trace(f"轮询验证码 round={poll_round} email={target} elapsed={elapsed}s/{timeout}s")
             try:
                 mails = self._list_mails(target)
+                self._skymail_trace(f"emailList 返回 {len(mails)} 封邮件")
                 for i, msg in enumerate(mails):
-                    mid = msg.get("id") or msg.get("mailId") or msg.get("messageId")
-                    if not mid:
-                        digest = (
-                            str(msg.get("date") or msg.get("time") or "")
-                            + "|"
-                            + str(msg.get("subject") or "")
-                        )
-                        mid = f"idx-{i}-{digest}"
-                    mid = str(mid)
+                    mid = self._mail_message_id(msg, i)
                     if mid in seen:
                         continue
                     seen.add(mid)
@@ -1366,8 +1399,9 @@ class SkyMailMailbox(BaseMailbox):
 
                     code = self._extract_code(content, code_pattern)
                     if code:
-                        print(f"[SkyMail] 命中验证码: {code}")
+                        self._skymail_trace(f"命中验证码: {code} (mail_id={mid})")
                         return code
+                    self._skymail_trace(f"邮件无验证码: subject={_truncate_mailbox_log(msg.get('subject'), 80)}")
             except Exception:
                 pass
             time.sleep(3)

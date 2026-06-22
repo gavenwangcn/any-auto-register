@@ -192,6 +192,7 @@ class ChatGPTPlatform(BasePlatform):
                 provider=(self.config.extra or {}).get("mail_provider", ""),
                 proxy_url=ctx.proxy,
                 log_fn=ctx.log,
+                before_ids=getattr(ctx.identity, "before_ids", None) or set(),
             )
 
         def _map_result(ctx, result):
