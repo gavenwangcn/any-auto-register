@@ -861,6 +861,61 @@ def _about_you_input_hints(entry: dict) -> str:
     return " ".join(part for part in parts if part).strip().lower()
 
 
+_ABOUT_YOU_AGE_HINTS = (
+    "age", "ages", "年龄", "how old", "edad", "âge", "alter", "idade", "나이",
+    "старост", "uzrast", "узраст", "возраст", "věk", "wiek", "età", "leeftijd",
+    "anos", "ans", "jahre", "años",
+)
+_ABOUT_YOU_BIRTHDAY_HINTS = (
+    "birthday", "date of birth", "birth date", "生日", "出生", "geburtstag",
+    "naissance", "nascimento", "fecha de nacimiento", "datum narození",
+)
+
+
+def _hints_indicate_age(hints: str) -> bool:
+    if not hints:
+        return False
+    if re.search(r"(^|[\s_\-])age($|[\s_\-])", hints):
+        return True
+    return any(token in hints for token in _ABOUT_YOU_AGE_HINTS)
+
+
+def _hints_indicate_birthday(hints: str) -> bool:
+    if not hints:
+        return False
+    return any(token in hints for token in _ABOUT_YOU_BIRTHDAY_HINTS)
+
+
+def _visible_inputs_indicate_age_mode(visible_inputs: list[dict]) -> bool:
+    has_age = False
+    has_birthday = False
+    for entry in visible_inputs:
+        hints = _about_you_input_hints(entry)
+        if _hints_indicate_age(hints):
+            has_age = True
+        if _hints_indicate_birthday(hints):
+            has_birthday = True
+    return has_age and not has_birthday
+
+
+def _is_age_validation_error(error_text: str) -> bool:
+    normalized = str(error_text or "").strip().lower()
+    if not normalized:
+        return False
+    markers = (
+        "enter a valid age",
+        "valid age",
+        "узраст",
+        "uzrast",
+        "старост",
+        "возраст",
+        "edad válida",
+        "âge valide",
+        "gültiges alter",
+    )
+    return any(marker in normalized for marker in markers)
+
+
 def _pick_best_about_you_input(entries: list[dict], field: str, exclude_visible_indices: set[int] | None = None) -> dict | None:
     exclude = {int(value) for value in (exclude_visible_indices or set())}
     best_entry = None
@@ -885,7 +940,7 @@ def _pick_best_about_you_input(entries: list[dict], field: str, exclude_visible_
             if any(token in hints for token in ("age", "年龄", "edad", "âge", "alter", "idade", "birthday", "birth", "date of birth", "出生", "生日")):
                 score -= 8
         elif field == "age":
-            if any(token in hints for token in ("age", "年龄", "how old", "edad", "âge", "alter", "idade", "나이")):
+            if _hints_indicate_age(hints):
                 score += 10
             if any(token in hints for token in ("full name", "fullname", "全名", "姓名", "nombre completo", "nom complet")):
                 score -= 10
@@ -3355,9 +3410,17 @@ def _submit_about_you_via_page(page, log) -> dict:
                 .map((n) => String(n.textContent || '').trim().toLowerCase())
                 .filter(Boolean);
               const allText = labels.concat(placeholders).concat(headings);
-              const hasAge = allText.some((t) => t === 'age' || t === 'edad' || t === 'âge' || t === 'alter' || t === 'idade' || t.includes('how old') || t.includes('年龄') || t.includes('나이'));
+              const hasAge = allText.some((t) =>
+                t === 'age' || t === 'edad' || t === 'âge' || t === 'alter' || t === 'idade'
+                || t.includes('how old') || t.includes('年龄') || t.includes('나이')
+                || t.includes('старост') || t.includes('uzrast') || t.includes('узраст') || t.includes('возраст')
+              ) || Array.from(document.querySelectorAll('input')).some((el) => {
+                const hint = `${el.name || ''} ${el.id || ''}`.toLowerCase();
+                return /(^|[\\s_\\-])age($|[\\s_\\-])/.test(hint);
+              });
               const hasBirthday = allText.some((t) =>
-                t.includes('birthday') || t.includes('date of birth') || t.includes('birth') || t.includes('生日') || t.includes('出生') || t.includes('fecha de nacimiento') || t.includes('nascimento') || t.includes('geburtstag') || t.includes('naissance')
+                t.includes('birthday') || t.includes('date of birth') || t.includes('生日') || t.includes('出生')
+                || t.includes('fecha de nacimiento') || t.includes('nascimento') || t.includes('geburtstag') || t.includes('naissance')
               );
               return { labels, placeholders, headings, hasAge, hasBirthday };
             }
@@ -3368,8 +3431,10 @@ def _submit_about_you_via_page(page, log) -> dict:
 
     has_age_label = bool(mode_probe.get("hasAge"))
     has_birthday_label = bool(mode_probe.get("hasBirthday"))
-    has_age_field = any(_has_visible(candidate) for candidate in age_candidates[:3])
-    has_birthday_field = any(_has_visible(candidate) for candidate in birthday_candidates[:3])
+    has_age_field = any(_has_visible(candidate) for candidate in age_candidates[:6])
+    birthday_probe_candidates = birthday_candidates[:6] + birthday_candidates[15:16]
+    has_birthday_field = any(_has_visible(candidate) for candidate in birthday_probe_candidates)
+    visible_age_mode = _visible_inputs_indicate_age_mode(visible_inputs)
     has_birthday_select = False
     try:
         has_birthday_select = page.locator("select:visible").count() >= 2
@@ -3377,7 +3442,7 @@ def _submit_about_you_via_page(page, log) -> dict:
         has_birthday_select = False
     if has_birthday_select:
         about_mode = "birthday_select"
-    elif (has_age_label and not has_birthday_label) or (has_age_field and not has_birthday_field):
+    elif visible_age_mode or (has_age_label and not has_birthday_label) or (has_age_field and not has_birthday_field):
         about_mode = "age"
     else:
         about_mode = "birthday"
@@ -3506,15 +3571,16 @@ def _submit_about_you_via_page(page, log) -> dict:
                 fill_result["age"] = True
             elif _fill_visible_input_entry(age_entry, str(age_years)):
                 fill_result["age"] = True
-            if not fill_result.get("age") and len(ordered_visible_entries) < 2:
+            if not fill_result.get("age"):
                 for candidate in age_candidates:
                     if _fill_locator(candidate, str(age_years)):
                         fill_result["age"] = True
                         break
-        # fallback: 直接找 placeholder="Age" 的输入框
-        if not fill_result.get("age") and age_years is not None and len(ordered_visible_entries) < 2:
+        if not fill_result.get("age") and age_years is not None:
             try:
-                age_input = page.locator("input[placeholder='Age'], input[placeholder='age']")
+                age_input = page.locator(
+                    "input[placeholder='Age'], input[placeholder='age'], input[name='age'], input[id*='age' i]"
+                )
                 if age_input.count() > 0:
                     age_input.first.click(force=True)
                     time.sleep(0.2)
@@ -3558,6 +3624,17 @@ def _submit_about_you_via_page(page, log) -> dict:
             fallback_values = [cn_birthdate, cn_birthdate.replace("/", " / "), cn_birthdate.replace("/", ""), us_birthdate, us_birthdate.replace("/", " / "), us_birthdate.replace("/", ""), birthdate]
             if _fill_second_visible_input(fallback_values):
                 fill_result["birthdate"] = True
+        if not fill_result.get("age") and age_years is not None and _visible_inputs_indicate_age_mode(visible_inputs):
+            if _fill_visible_input_entry(age_entry, str(age_years)):
+                fill_result["age"] = True
+            elif direct_age_selector and _fill_input_like_user(page, direct_age_selector, str(age_years)):
+                fill_result["age"] = True
+            else:
+                excluded_indices = set()
+                if name_entry and str(name_entry.get("visibleIndex", "")).isdigit():
+                    excluded_indices.add(int(name_entry.get("visibleIndex")))
+                if _fill_second_visible_input([str(age_years)], excluded_visible_indices=excluded_indices):
+                    fill_result["age"] = True
 
     log(f"about_you 填写结果: {fill_result}")
     if not fill_result.get("name"):
@@ -3609,6 +3686,11 @@ def _submit_about_you_via_page(page, log) -> dict:
                 error_text = ""
         if not error_text:
             try:
+                error_text = page.locator("text=узраст").first.text_content(timeout=300)
+            except Exception:
+                error_text = ""
+        if not error_text:
+            try:
                 error_text = page.locator("text=doesn't look right").first.text_content(timeout=300)
             except Exception:
                 error_text = ""
@@ -3625,17 +3707,22 @@ def _submit_about_you_via_page(page, log) -> dict:
         if error_text and "oai_log" not in error_text and "SSR_HTML" not in error_text:
             normalized_error = str(error_text).strip().lower()
             if (
-                about_mode == "age"
-                and not retried_generic_validation
-                and ("doesn't look right" in normalized_error or "try again" in normalized_error)
+                not retried_generic_validation
+                and (
+                    _is_age_validation_error(error_text)
+                    or (
+                        about_mode == "age"
+                        and ("doesn't look right" in normalized_error or "try again" in normalized_error)
+                    )
+                )
             ):
                 retried_generic_validation = True
-                log("about_you age 模式提交被拒，重新同步 Full name/Age/hidden birthday 后重试一次...")
+                log("about_you 年龄校验失败，重新填写 Full name/Age 后重试一次...")
                 if direct_name_selector and _fill_input_like_user(page, direct_name_selector, name):
                     fill_result["name"] = True
                 elif _fill_visible_input_entry(name_entry, name):
                     fill_result["name"] = True
-                elif len(ordered_visible_entries) < 2:
+                else:
                     for candidate in name_candidates:
                         if _fill_locator(candidate, name):
                             fill_result["name"] = True
@@ -3645,11 +3732,17 @@ def _submit_about_you_via_page(page, log) -> dict:
                         fill_result["age"] = True
                     elif _fill_visible_input_entry(age_entry, str(age_years)):
                         fill_result["age"] = True
-                    elif len(ordered_visible_entries) < 2:
+                    else:
                         for candidate in age_candidates:
                             if _fill_locator(candidate, str(age_years)):
                                 fill_result["age"] = True
                                 break
+                    if not fill_result.get("age"):
+                        excluded_indices = set()
+                        if name_entry and str(name_entry.get("visibleIndex", "")).isdigit():
+                            excluded_indices.add(int(name_entry.get("visibleIndex")))
+                        if _fill_second_visible_input([str(age_years)], excluded_visible_indices=excluded_indices):
+                            fill_result["age"] = True
                 if len(date_parts) == 3 and _sync_hidden_birthday_input(page, f"{yyyy}-{mm}-{dd}", log):
                     fill_result["birthdate"] = True
                 _browser_pause(page)
