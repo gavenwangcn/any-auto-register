@@ -692,12 +692,15 @@ def _wait_for_any_selector(page, selectors: list[str], timeout: int = 30):
     return None
 
 
-def _click_first(page, selectors: list[str], *, timeout: int = 10) -> str | None:
+def _click_first(page, selectors: list[str], *, timeout: int = 10, click_timeout_ms: int | None = None) -> str | None:
     found = _wait_for_any_selector(page, selectors, timeout=timeout)
     if not found:
         return None
     try:
-        page.click(found)
+        if click_timeout_ms is not None:
+            page.click(found, timeout=click_timeout_ms)
+        else:
+            page.click(found)
         return found
     except Exception:
         return None
@@ -2333,7 +2336,7 @@ def _do_add_phone_attempt(
             'a:has-text("Resend")',
             'a:has-text("resend")',
             'a:has-text("Resend code")',
-        ], timeout=3)
+        ], timeout=3, click_timeout_ms=5000)
         if resend_clicked:
             log(f"  phone-otp/resend -> 已点击页面 Resend 按钮: {resend_clicked}")
         else:

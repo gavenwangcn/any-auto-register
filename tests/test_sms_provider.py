@@ -466,3 +466,65 @@ class TestSmsActivation:
     def test_with_country(self):
         a = SmsActivation(activation_id="1", phone_number="+1555", country="us")
         assert a.country == "us"
+
+
+class TestHeroSmsWaitForCode:
+    def test_get_code_does_not_extend_timeout_with_phone_cache(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(sms_module, "hero_sms_cache_file", lambda: tmp_path / ".herosms_phone_cache.json")
+        monkeypatch.setattr(sms_module, "_HERO_SMS_CACHE", {
+            "api_key_hash": sms_module._hash_secret("hero123"),
+            "service": "dr",
+            "country": "187",
+            "activation_id": "act_cache",
+            "phone_number": "+15550000000",
+            "acquired_at": sms_module.time.time(),
+            "use_count": 0,
+            "used_codes": set(),
+            "attempted_sms_keys": set(),
+            "reuse_stopped": False,
+        })
+        provider = HeroSmsProvider("hero123")
+        captured = []
+
+        def fake_wait_for_code(activation_id, *, timeout, poll_interval=3, log_fn=None):
+            captured.append(timeout)
+            return None
+
+        monkeypatch.setattr(provider, "wait_for_code", fake_wait_for_code)
+        provider.get_code("act_cache", timeout=180)
+        assert captured == [180]
+
+    def test_wait_for_code_exits_after_post_resend_window(self, monkeypatch):
+        monkeypatch.setattr(sms_module, "HERO_SMS_OPENAI_RESEND_AFTER", 1)
+        monkeypatch.setattr(sms_module, "HERO_SMS_POST_RESEND_WAIT", 2)
+        monkeypatch.setattr(sms_module, "HERO_SMS_POLL_LOG_INTERVAL", 1)
+        monkeypatch.setattr(sms_module, "HERO_SMS_RESEND_CALLBACK_TIMEOUT", 1)
+
+        provider = HeroSmsProvider("hero123")
+        events = []
+        provider.set_resend_callback(lambda: events.append("openai"))
+        monkeypatch.setattr(provider, "get_status_v2", lambda activation_id: {"status": "wait_code"})
+        monkeypatch.setattr(provider, "get_status", lambda activation_id: {"status": "wait_code"})
+        monkeypatch.setattr(provider, "get_active_activations", lambda: [])
+        monkeypatch.setattr(provider, "request_resend_sms", lambda activation_id: events.append("hero") or True)
+
+        start = sms_module.time.time()
+        result = provider.wait_for_code(
+            "act_post_resend",
+            timeout=30,
+            poll_interval=0.2,
+            log_fn=events.append,
+        )
+        elapsed = sms_module.time.time() - start
+
+        assert result is None
+        assert "openai" in events
+        assert elapsed < 8
+
+    def test_invoke_resend_callback_safe_times_out(self, monkeypatch):
+        monkeypatch.setattr(sms_module, "HERO_SMS_RESEND_CALLBACK_TIMEOUT", 0.1)
+
+        def slow_callback():
+            sms_module.time.sleep(1)
+
+        assert sms_module._invoke_resend_callback_safe(slow_callback, timeout=0.1) is False
