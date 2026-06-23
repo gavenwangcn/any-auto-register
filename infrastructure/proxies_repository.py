@@ -3,6 +3,7 @@ from __future__ import annotations
 from sqlmodel import Session, select
 
 from core.db import ProxyModel, engine
+from core.proxy_url import normalize_proxy_url
 from domain.proxies import ProxyCreateCommand, ProxyRecord
 
 
@@ -25,11 +26,14 @@ class ProxiesRepository:
         return [_to_record(item) for item in items]
 
     def create(self, command: ProxyCreateCommand) -> ProxyRecord | None:
+        url = normalize_proxy_url(command.url)
+        if not url:
+            return None
         with Session(engine) as session:
-            existing = session.exec(select(ProxyModel).where(ProxyModel.url == command.url)).first()
+            existing = session.exec(select(ProxyModel).where(ProxyModel.url == url)).first()
             if existing:
                 return None
-            model = ProxyModel(url=command.url, region=command.region)
+            model = ProxyModel(url=url, region=command.region)
             session.add(model)
             session.commit()
             session.refresh(model)
@@ -39,7 +43,7 @@ class ProxiesRepository:
         added = 0
         with Session(engine) as session:
             for raw in urls:
-                url = raw.strip()
+                url = normalize_proxy_url(raw)
                 if not url:
                     continue
                 existing = session.exec(select(ProxyModel).where(ProxyModel.url == url)).first()

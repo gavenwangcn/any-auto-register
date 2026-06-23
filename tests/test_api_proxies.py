@@ -43,3 +43,18 @@ def test_bulk_add_proxies(client):
     assert resp.status_code == 200
     list_resp = client.get("/api/proxies")
     assert len(list_resp.json()) == 2
+
+
+def test_bulk_add_rapidproxy_format(client):
+    raw = "eu.rapidproxy.io:5001:fixaigo123-residential-UZ-session-82336611-stime-10:a123456O"
+    expected = "http://fixaigo123-residential-UZ-session-82336611-stime-10:a123456O@eu.rapidproxy.io:5001"
+    resp = client.post("/api/proxies/bulk", json={
+        "proxies": [raw],
+        "region": "UZ",
+    })
+    assert resp.status_code == 200
+    list_resp = client.get("/api/proxies")
+    data = list_resp.json()
+    assert len(data) == 1
+    assert data[0]["url"] == expected
+    assert data[0]["region"] == "UZ"

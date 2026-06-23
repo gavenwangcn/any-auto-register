@@ -101,7 +101,7 @@ export default function Proxies() {
             <textarea
               value={newProxy}
               onChange={e => setNewProxy(e.target.value)}
-              placeholder="http://user:pass@host:port"
+              placeholder="http://user:pass@host:port 或 host:port:user:pass"
               rows={8}
               className="control-surface control-surface-mono resize-none"
             />
@@ -112,7 +112,7 @@ export default function Proxies() {
               className="control-surface"
             />
             <div className="rounded-lg border border-[var(--border-soft)] bg-[var(--bg-pane)]/45 px-3.5 py-2.5 text-xs leading-5 text-[var(--text-secondary)]">
-              支持单条代理直接录入，也支持多行批量导入。地区标签会一起写入，用于后续筛选和出入口识别。
+              支持单条代理直接录入，也支持多行批量导入。可直接粘贴 RapidProxy 格式（host:port:用户名:密码），系统会自动转换为标准 URL。地区标签会一起写入，用于后续筛选和出入口识别。
             </div>
             <Button onClick={add} className="w-full">
               <Plus className="h-4 w-4 mr-1.5" />

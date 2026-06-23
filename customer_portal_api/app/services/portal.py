@@ -12,6 +12,7 @@ from fastapi import HTTPException, status
 from fastapi.responses import StreamingResponse
 from sqlmodel import Session, select
 
+from core.proxy_url import normalize_proxy_url
 from app.catalog import collect_platform_choice_options, platform_payload
 from app.db import utcnow
 from app.models import (
@@ -726,6 +727,9 @@ class PortalService:
         return [self._serialize_proxy(item) for item in rows]
 
     def create_proxy(self, url: str, region: str = "") -> dict:
+        url = normalize_proxy_url(url)
+        if not url:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="代理地址无效")
         existing = self.session.exec(select(PortalProxy).where(PortalProxy.url == url)).first()
         if existing:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="代理已存在")
@@ -737,8 +741,8 @@ class PortalService:
 
     def bulk_create_proxies(self, proxies: list[str], region: str = "") -> dict:
         added = 0
-        for url in proxies:
-            url = str(url or "").strip()
+        for raw in proxies:
+            url = normalize_proxy_url(str(raw or ""))
             if not url:
                 continue
             exists = self.session.exec(select(PortalProxy).where(PortalProxy.url == url)).first()
