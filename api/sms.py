@@ -272,8 +272,7 @@ def fivesim_countries():
         raise HTTPException(502, str(exc)) from exc
 
 
-@router.get("/fivesim/products")
-def fivesim_products(country: str = "", debug: bool = False):
+def _fivesim_effective_country(country: str = "") -> tuple[str, str, dict]:
     saved = _saved_fivesim_config()
     effective_country = (
         str(country or "").strip()
@@ -281,44 +280,58 @@ def fivesim_products(country: str = "", debug: bool = False):
         or str(saved.get("sms_country") or "").strip()
     )
     operator = str(saved.get("fivesim_default_operator") or "any").strip() or "any"
+    return effective_country, operator, saved
+
+
+def _fivesim_list_services(*, country: str = "", debug: bool = False) -> dict:
+    effective_country, operator, saved = _fivesim_effective_country(country)
     logger.info(
-        "5sim products request: query_country=%r saved_country=%r effective_country=%r operator=%r",
+        "5sim services request: query_country=%r saved_country=%r effective_country=%r operator=%r",
         country,
         saved.get("fivesim_default_country"),
         effective_country,
         operator,
     )
-    try:
-        provider = _fivesim_from_payload(HeroSmsQueryRequest(country=effective_country))
-        products, meta = provider.get_products(country=effective_country or None, with_meta=True)
-        logger.info(
-            "5sim products response: country=%r operator=%r count=%s source=%s raw_keys=%s filtered_hosting=%s",
+    provider = _fivesim_from_payload(HeroSmsQueryRequest(country=effective_country))
+    services, meta = provider.get_services(country=effective_country or None, with_meta=True)
+    logger.info(
+        "5sim services response: country=%r operator=%r count=%s source=%s raw_keys=%s filtered_hosting=%s",
+        meta.get("country"),
+        meta.get("operator"),
+        len(services),
+        meta.get("source"),
+        meta.get("raw_keys"),
+        meta.get("filtered_hosting"),
+    )
+    if not services:
+        logger.warning(
+            "5sim services empty: country=%r path=%r upstream_status=%s upstream_preview=%r",
             meta.get("country"),
-            meta.get("operator"),
-            len(products),
-            meta.get("source"),
-            meta.get("raw_keys"),
-            meta.get("filtered_hosting"),
+            meta.get("path"),
+            meta.get("upstream_status"),
+            meta.get("upstream_preview"),
         )
-        if not products:
-            logger.warning(
-                "5sim products empty: country=%r path=%r upstream_status=%s upstream_preview=%r",
-                meta.get("country"),
-                meta.get("path"),
-                meta.get("upstream_status"),
-                meta.get("upstream_preview"),
-            )
-        payload: dict = {"products": products}
-        if debug:
-            payload["meta"] = meta
-        return payload
+    payload: dict = {"services": services, "products": services}
+    if debug:
+        payload["meta"] = meta
+    return payload
+
+
+@router.get("/fivesim/services")
+def fivesim_services(country: str = "", debug: bool = False):
+    try:
+        return _fivesim_list_services(country=country, debug=debug)
     except Exception as exc:
-        logger.exception(
-            "5sim products failed: query_country=%r effective_country=%r error=%s",
-            country,
-            effective_country,
-            exc,
-        )
+        logger.exception("5sim services failed: country=%r error=%s", country, exc)
+        raise HTTPException(502, str(exc)) from exc
+
+
+@router.get("/fivesim/products")
+def fivesim_products(country: str = "", debug: bool = False):
+    try:
+        return _fivesim_list_services(country=country, debug=debug)
+    except Exception as exc:
+        logger.exception("5sim products failed: country=%r error=%s", country, exc)
         raise HTTPException(502, str(exc)) from exc
 
 

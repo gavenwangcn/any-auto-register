@@ -191,6 +191,47 @@ FIVESIM_DEFAULT_COUNTRY = "england"
 FIVESIM_DEFAULT_OPERATOR = "any"
 FIVESIM_TERMINAL_STATUSES = frozenset({"CANCELED", "TIMEOUT", "BANNED", "FINISHED"})
 FIVESIM_FAILED_STATUSES = frozenset({"CANCELED", "TIMEOUT", "BANNED"})
+_FIVESIM_LABELS_LOCK = threading.Lock()
+_FIVESIM_SERVICE_LABELS: dict[str, str] | None = None
+
+
+def _load_fivesim_service_labels() -> dict[str, str]:
+    global _FIVESIM_SERVICE_LABELS
+    if _FIVESIM_SERVICE_LABELS is not None:
+        return _FIVESIM_SERVICE_LABELS
+    with _FIVESIM_LABELS_LOCK:
+        if _FIVESIM_SERVICE_LABELS is not None:
+            return _FIVESIM_SERVICE_LABELS
+        labels: dict[str, str] = {}
+        labels_path = Path(__file__).with_name("fivesim_service_labels.json")
+        if labels_path.is_file():
+            try:
+                raw = json.loads(labels_path.read_text(encoding="utf-8"))
+                if isinstance(raw, dict):
+                    labels = {str(k): str(v) for k, v in raw.items()}
+            except Exception as exc:
+                logger.warning("加载 5sim 服务名称映射失败: %s", exc)
+        _FIVESIM_SERVICE_LABELS = labels
+        return labels
+
+
+def _fivesim_service_label(code: str) -> str:
+    slug = str(code or "").strip()
+    if not slug:
+        return ""
+    labels = _load_fivesim_service_labels()
+    return labels.get(slug) or labels.get(slug.lower()) or slug
+
+
+def _fivesim_service_row(code: str, *, qty=0, price=0) -> dict:
+    label = _fivesim_service_label(code)
+    return {
+        "code": code,
+        "name": label,
+        "service": code,
+        "qty": qty,
+        "price": price,
+    }
 
 FIVESIM_SERVICES = {
     "cursor": "other",
@@ -391,12 +432,11 @@ class FiveSimProvider(BaseSmsProvider):
                 if category == "hosting":
                     meta["filtered_hosting"] += 1
                     continue
-                rows.append({
-                    "code": code,
-                    "name": code,
-                    "qty": info.get("Qty") or info.get("qty") or 0,
-                    "price": info.get("Price") or info.get("price") or 0,
-                })
+                rows.append(_fivesim_service_row(
+                    code,
+                    qty=info.get("Qty") or info.get("qty") or 0,
+                    price=info.get("Price") or info.get("price") or 0,
+                ))
         except Exception as exc:
             logger.warning("5sim getProducts primary failed country=%s path=%s: %s", country_slug, path, exc)
             meta["source"] = "guest_products_error"
@@ -447,13 +487,16 @@ class FiveSimProvider(BaseSmsProvider):
                 best_count = max(best_count, count)
                 if cost > 0 and (best_price <= 0 or cost < best_price):
                     best_price = cost
-            rows.append({
-                "code": code,
-                "name": code,
-                "qty": best_count,
-                "price": best_price,
-            })
+            rows.append(_fivesim_service_row(
+                code,
+                qty=best_count,
+                price=best_price,
+            ))
         return rows
+
+    def get_services(self, country: str | None = None, *, with_meta: bool = False) -> list[dict] | tuple[list[dict], dict]:
+        """GET /guest/products/{country}/{operator} — 5sim 文档中的 Service / Product 列表。"""
+        return self.get_products(country=country, with_meta=with_meta)
 
     def get_prices(self, *, product: str | None = None, country: str | None = None) -> dict:
         params: dict[str, str] = {}
@@ -1630,6 +1673,8 @@ def create_sms_provider(provider_key: str, config: dict) -> BaseSmsProvider:
             api_key=api_key,
             default_product=str(
                 config.get("sms_service")
+                or config.get("fivesim_service")
+                or config.get("fivesim_default_service")
                 or config.get("fivesim_product")
                 or config.get("fivesim_default_product")
                 or FIVESIM_DEFAULT_PRODUCT

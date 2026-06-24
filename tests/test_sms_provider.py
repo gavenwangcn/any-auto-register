@@ -562,6 +562,10 @@ class TestFiveSimMapping:
         assert _resolve_fivesim_country("us", "") == "usa"
         assert _resolve_fivesim_country("uk", "") == "england"
 
+    def test_service_label_openai(self):
+        from core.base_sms import _fivesim_service_label
+        assert _fivesim_service_label("openai") == "OpenAI/ChatGPT"
+
 
 class TestFiveSimProvider:
     def test_get_balance(self, monkeypatch):
@@ -624,9 +628,10 @@ class TestFiveSimProvider:
                 },
             },
         )
-        rows, meta = provider.get_products(country="usa", with_meta=True)
+        rows, meta = provider.get_services(country="usa", with_meta=True)
         assert meta["source"] == "guest_prices_fallback"
         assert any(row["code"] == "openai" for row in rows)
+        assert rows[0]["name"]  # 有服务显示名
 
     def test_get_number(self, monkeypatch):
         provider = FiveSimProvider("token123", default_product="openai", default_country="england")
