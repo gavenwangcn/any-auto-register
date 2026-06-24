@@ -4,7 +4,6 @@ import json
 import random
 import re
 import secrets
-import threading
 import time
 import uuid
 from typing import Callable, Optional
@@ -51,24 +50,14 @@ def _ensure_page_alive(page, *, action: str = "browser operation") -> None:
 
 
 def _close_camoufox_context(ctx, log, *, timeout: float = BROWSER_CLOSE_TIMEOUT) -> None:
+    """在同一线程关闭 Camoufox（Playwright Sync API 不能跨线程）。"""
     if ctx is None:
         return
-    errors: list[BaseException] = []
-
-    def _do_close() -> None:
-        try:
-            ctx.__exit__(None, None, None)
-        except Exception as exc:
-            errors.append(exc)
-
-    thread = threading.Thread(target=_do_close, daemon=True)
-    thread.start()
-    thread.join(timeout=timeout)
-    if thread.is_alive():
-        log(f"浏览器关闭超时({int(timeout)}s)，强制结束任务")
-        return
-    if errors:
-        log(f"浏览器关闭异常(已忽略): {errors[0]}")
+    del timeout  # 保留参数兼容；Sync API 必须在创建线程内关闭
+    try:
+        ctx.__exit__(None, None, None)
+    except Exception as exc:
+        log(f"浏览器关闭异常(已忽略): {exc}")
 
 
 def _wait_for_page_transition(
@@ -4110,8 +4099,7 @@ class ChatGPTBrowserRegister:
             launch_opts["geoip"] = True
 
         ctx = Camoufox(**launch_opts)
-        try:
-            browser = ctx.__enter__()
+        with ctx as browser:
             page = browser.new_page()
             self.log("启动浏览器上下文注册状态机")
             final_state = _browser_registration_flow(
@@ -4131,8 +4119,6 @@ class ChatGPTBrowserRegister:
             # 注册完成后的浏览器上下文 session 状态不稳定（NS_BINDING_ABORTED），
             # 直接用全新浏览器做 OAuth 更可靠
             self.log("执行 Codex CLI OAuth 流程获取 token...")
-        finally:
-            _close_camoufox_context(ctx, self.log)
 
         # 直接用全新浏览器做 OAuth（注册后的浏览器上下文不可靠）
         codex_result = self._retry_oauth_fresh_browser(email, password)
@@ -4158,15 +4144,13 @@ class ChatGPTBrowserRegister:
             launch_opts["proxy"] = proxy
         ctx = Camoufox(**launch_opts)
         try:
-            browser = ctx.__enter__()
-            page = browser.new_page()
-            self.log("  全新浏览器 OAuth 开始...")
-            return _do_codex_oauth(
-                page, {}, email, password,
-                self.otp_callback, self.phone_callback, self.proxy, self.log,
-            )
+            with ctx as browser:
+                page = browser.new_page()
+                self.log("  全新浏览器 OAuth 开始...")
+                return _do_codex_oauth(
+                    page, {}, email, password,
+                    self.otp_callback, self.phone_callback, self.proxy, self.log,
+                )
         except Exception as e:
             self.log(f"  全新浏览器 OAuth 异常: {e}")
             return None
-        finally:
-            _close_camoufox_context(ctx, self.log)

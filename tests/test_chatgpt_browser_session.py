@@ -14,19 +14,15 @@ class TestBrowserSessionHelpers:
         )
         assert not browser_register_module._is_browser_connection_error(RuntimeError("timeout"))
 
-    def test_close_camoufox_context_times_out_without_blocking(self, monkeypatch):
+    def test_close_camoufox_context_swallows_errors(self):
         logs = []
 
-        class SlowContext:
+        class BrokenContext:
             def __exit__(self, exc_type, exc, tb):
-                time.sleep(2)
+                raise RuntimeError("already closed")
 
-        monkeypatch.setattr(browser_register_module, "BROWSER_CLOSE_TIMEOUT", 0.05)
-        start = time.time()
-        browser_register_module._close_camoufox_context(SlowContext(), logs.append)
-        elapsed = time.time() - start
-        assert elapsed < 1.0
-        assert any("浏览器关闭超时" in item for item in logs)
+        browser_register_module._close_camoufox_context(BrokenContext(), logs.append)
+        assert any("浏览器关闭异常" in item for item in logs)
 
     def test_wait_for_page_transition_clicks_passwordless_only_once(self, monkeypatch):
         logs = []
