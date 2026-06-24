@@ -182,6 +182,335 @@ class SmsActivateProvider(BaseSmsProvider):
 
 
 # ---------------------------------------------------------------------------
+# 5sim implementation (https://5sim.net/docs)
+# ---------------------------------------------------------------------------
+
+FIVESIM_BASE_URL = "https://5sim.net/v1"
+FIVESIM_DEFAULT_PRODUCT = "openai"
+FIVESIM_DEFAULT_COUNTRY = "england"
+FIVESIM_DEFAULT_OPERATOR = "any"
+
+FIVESIM_SERVICES = {
+    "cursor": "other",
+    "chatgpt": "openai",
+    "openai": "openai",
+    "google": "google",
+    "microsoft": "microsoft",
+    "default": "openai",
+}
+
+FIVESIM_COUNTRY_ALIASES = {
+    "us": "usa",
+    "usa": "usa",
+    "uk": "england",
+    "gb": "england",
+    "ph": "philippines",
+    "th": "thailand",
+    "id": "indonesia",
+    "ru": "russia",
+    "vn": "vietnam",
+    "in": "india",
+    "uz": "uzbekistan",
+    "default": "any",
+    "any": "any",
+}
+
+
+def _resolve_fivesim_product(service: str, default_product: str = "") -> str:
+    raw = str(service or default_product or FIVESIM_DEFAULT_PRODUCT).strip().lower()
+    if not raw:
+        raw = FIVESIM_DEFAULT_PRODUCT
+    if raw in FIVESIM_SERVICES:
+        return FIVESIM_SERVICES[raw]
+    return raw
+
+
+def _resolve_fivesim_country(country: str, default_country: str = "") -> str:
+    raw = str(country or default_country or FIVESIM_DEFAULT_COUNTRY).strip().lower()
+    if not raw:
+        raw = FIVESIM_DEFAULT_COUNTRY
+    if raw.isdigit():
+        return raw
+    return FIVESIM_COUNTRY_ALIASES.get(raw, raw)
+
+
+def _fivesim_path_segment(value: str) -> str:
+    from urllib.parse import quote
+
+    return quote(str(value or "").strip(), safe="")
+
+
+class FiveSimProvider(BaseSmsProvider):
+    """5sim.net provider (Bearer token REST API)."""
+
+    def __init__(
+        self,
+        api_key: str,
+        *,
+        default_product: str = FIVESIM_DEFAULT_PRODUCT,
+        default_country: str = FIVESIM_DEFAULT_COUNTRY,
+        default_operator: str = FIVESIM_DEFAULT_OPERATOR,
+        max_price: float = -1,
+        proxy: str | None = None,
+    ):
+        self.api_key = str(api_key or "").strip()
+        self.default_product = _resolve_fivesim_product("", default_product)
+        self.default_country = _resolve_fivesim_country("", default_country)
+        self.default_operator = str(default_operator or FIVESIM_DEFAULT_OPERATOR).strip() or FIVESIM_DEFAULT_OPERATOR
+        self.max_price = float(max_price or -1)
+        self.proxy = _normalize_hero_proxy(proxy)
+        self.proxies = {"http": self.proxy, "https": self.proxy} if self.proxy else None
+        self.openai_resend_callback: Callable[[], None] | None = None
+        self.last_code_result: dict | None = None
+
+    def _headers(self, *, auth: bool = True) -> dict[str, str]:
+        headers = {"Accept": "application/json"}
+        if auth:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        return headers
+
+    def _request(self, path: str, *, auth: bool = True, params: dict | None = None, timeout: int = 30) -> requests.Response:
+        url = f"{FIVESIM_BASE_URL}/{str(path or '').lstrip('/')}"
+        resp = requests.get(
+            url,
+            headers=self._headers(auth=auth),
+            params=params or None,
+            timeout=timeout,
+            proxies=self.proxies,
+        )
+        return resp
+
+    def _parse_json_response(self, resp: requests.Response, *, action: str) -> dict:
+        if resp.status_code == 401:
+            raise RuntimeError("5sim: API Token 无效或未授权")
+        text = str(resp.text or "").strip()
+        if resp.status_code == 404:
+            raise RuntimeError(f"5sim: {action} 未找到")
+        if text.lower() == "no free phones":
+            raise RuntimeError("5sim: 当前无可用号码")
+        if resp.status_code >= 400:
+            raise RuntimeError(f"5sim {action} 失败 ({resp.status_code}): {text[:200]}")
+        if not text:
+            raise RuntimeError(f"5sim {action} 返回空响应")
+        try:
+            data = resp.json()
+        except ValueError as exc:
+            raise RuntimeError(f"5sim {action} 返回非 JSON: {text[:200]}") from exc
+        if not isinstance(data, dict):
+            raise RuntimeError(f"5sim {action} 返回格式异常")
+        return data
+
+    def get_balance(self) -> float:
+        data = self._parse_json_response(self._request("/user/profile"), action="getBalance")
+        return float(data.get("balance") or 0)
+
+    def get_countries(self) -> list[dict]:
+        data = self._parse_json_response(self._request("/guest/countries", auth=False), action="getCountries")
+        rows: list[dict] = []
+        for slug, info in sorted(data.items()):
+            if not isinstance(info, dict):
+                continue
+            rows.append({
+                "id": slug,
+                "chn": str(info.get("text_en") or slug),
+                "iso": info.get("iso"),
+            })
+        return rows
+
+    def get_products(self, country: str | None = None) -> list[dict]:
+        country_slug = _resolve_fivesim_country(country or "", self.default_country)
+        operator = _fivesim_path_segment(self.default_operator)
+        path = f"/guest/products/{_fivesim_path_segment(country_slug)}/{operator}"
+        data = self._parse_json_response(self._request(path, auth=False), action="getProducts")
+        rows: list[dict] = []
+        for code, info in sorted(data.items()):
+            if not isinstance(info, dict):
+                continue
+            if str(info.get("Category") or "").lower() == "hosting":
+                continue
+            rows.append({
+                "code": code,
+                "name": code,
+                "qty": info.get("Qty") or info.get("qty") or 0,
+                "price": info.get("Price") or info.get("price") or 0,
+            })
+        return rows
+
+    def get_prices(self, *, product: str | None = None, country: str | None = None) -> dict:
+        params: dict[str, str] = {}
+        product_name = _resolve_fivesim_product(product or "", self.default_product)
+        if product_name:
+            params["product"] = product_name
+        country_slug = _resolve_fivesim_country(country or "", self.default_country)
+        if country_slug and country_slug != "any":
+            params["country"] = country_slug
+        resp = self._request("/guest/prices", auth=False, params=params or None)
+        return self._parse_json_response(resp, action="getPrices")
+
+    def get_top_countries(self, *, service: str | None = None) -> list[dict]:
+        product = _resolve_fivesim_product(service or "", self.default_product)
+        data = self.get_prices(product=product)
+        rows: list[dict] = []
+        for country_slug, products in sorted(data.items()):
+            if not isinstance(products, dict):
+                continue
+            product_info = products.get(product)
+            if not isinstance(product_info, dict):
+                continue
+            best_count = 0
+            best_price = None
+            for operator_info in product_info.values():
+                if not isinstance(operator_info, dict):
+                    continue
+                count = int(operator_info.get("count") or 0)
+                cost = float(operator_info.get("cost") or 0)
+                if count > best_count or (count == best_count and best_price is not None and cost < best_price):
+                    best_count = count
+                    best_price = cost
+                elif best_price is None and count > 0:
+                    best_count = count
+                    best_price = cost
+            if best_count <= 0:
+                continue
+            rows.append({
+                "country": country_slug,
+                "price": best_price or 0,
+                "count": best_count,
+            })
+        rows.sort(key=lambda item: (float(item.get("price") or 0), -int(item.get("count") or 0)))
+        return rows
+
+    def get_best_country(self, service: str | None = None, *, min_stock: int = 20, max_price: float = 0) -> str | None:
+        rows = self.get_top_countries(service=service)
+        for row in rows:
+            country_id = str(row.get("country") or "")
+            count = int(row.get("count") or 0)
+            price = float(row.get("price") or 0)
+            if count < min_stock:
+                continue
+            if max_price > 0 and price > max_price:
+                continue
+            return country_id
+        for row in rows:
+            if int(row.get("count") or 0) > 0:
+                return str(row.get("country") or "") or None
+        return None
+
+    def _check_order(self, activation_id: str) -> dict:
+        path = f"/user/check/{_fivesim_path_segment(str(activation_id))}"
+        return self._parse_json_response(self._request(path), action="checkOrder")
+
+    def get_number(self, *, service: str, country: str = "") -> SmsActivation:
+        product = _resolve_fivesim_product(service, self.default_product)
+        country_slug = _resolve_fivesim_country(country, self.default_country)
+        operator = _fivesim_path_segment(self.default_operator)
+        params: dict[str, str | int] = {}
+        if self.max_price > 0:
+            params["maxPrice"] = int(self.max_price)
+        path = (
+            f"/user/buy/activation/"
+            f"{_fivesim_path_segment(country_slug)}/"
+            f"{operator}/"
+            f"{_fivesim_path_segment(product)}"
+        )
+        data = self._parse_json_response(self._request(path, params=params or None), action="buyActivation")
+        phone = str(data.get("phone") or "").strip()
+        activation_id = str(data.get("id") or "").strip()
+        if not activation_id or not phone:
+            raise RuntimeError(f"5sim buyActivation 返回无效订单: {data}")
+        return SmsActivation(
+            activation_id=activation_id,
+            phone_number=phone if phone.startswith("+") else f"+{phone.lstrip('+')}",
+            country=country_slug,
+            metadata={
+                "operator": data.get("operator"),
+                "product": product,
+                "status": data.get("status"),
+            },
+        )
+
+    def get_code(
+        self,
+        activation_id: str,
+        *,
+        timeout: int = 120,
+        log_fn: Callable[[str], None] | None = None,
+    ) -> str:
+        wait_timeout = max(int(timeout), 60)
+        deadline = time.time() + wait_timeout
+        start = time.time()
+        last_log_at = start
+        round_num = 0
+        _log = log_fn or (lambda _msg: None)
+
+        while time.time() < deadline:
+            round_num += 1
+            try:
+                order = self._check_order(activation_id)
+            except Exception as exc:
+                logger.warning("5sim check order failed: %s", exc)
+                time.sleep(3)
+                continue
+
+            status = str(order.get("status") or "").upper()
+            if status in {"CANCELED", "TIMEOUT", "BANNED"}:
+                _log(f"5sim 订单结束: activation_id={activation_id} status={status}")
+                return ""
+
+            sms_list = order.get("sms") or []
+            if isinstance(sms_list, list):
+                for item in reversed(sms_list):
+                    if not isinstance(item, dict):
+                        continue
+                    code = str(item.get("code") or "").strip()
+                    if code:
+                        self.last_code_result = {"status": "ok", "code": code, "source": "5sim"}
+                        return code
+
+            now = time.time()
+            if now - last_log_at >= HERO_SMS_POLL_LOG_INTERVAL:
+                elapsed = int(now - start)
+                remaining = max(0, int(deadline - now))
+                _log(
+                    f"轮询短信验证码 round={round_num} activation_id={activation_id} "
+                    f"status={status or '-'} elapsed={elapsed}s/{wait_timeout}s remaining={remaining}s"
+                )
+                last_log_at = now
+            time.sleep(3)
+
+        self.cancel(activation_id)
+        return ""
+
+    def cancel(self, activation_id: str) -> bool:
+        try:
+            path = f"/user/cancel/{_fivesim_path_segment(str(activation_id))}"
+            self._parse_json_response(self._request(path), action="cancelOrder")
+            return True
+        except Exception as exc:
+            logger.warning("5sim cancel failed: %s", exc)
+            return False
+
+    def report_success(self, activation_id: str) -> bool:
+        try:
+            path = f"/user/finish/{_fivesim_path_segment(str(activation_id))}"
+            self._parse_json_response(self._request(path), action="finishOrder")
+            return True
+        except Exception as exc:
+            logger.warning("5sim finish failed: %s", exc)
+            return False
+
+    def set_resend_callback(self, callback: Callable[[], None] | None) -> None:
+        self.openai_resend_callback = callback
+
+    def mark_code_failed(self, activation_id: str, reason: str = "") -> None:
+        if self.openai_resend_callback:
+            _invoke_resend_callback_safe(self.openai_resend_callback)
+
+    def mark_send_failed(self, activation_id: str, reason: str = "") -> None:
+        self.cancel(activation_id)
+
+
+# ---------------------------------------------------------------------------
 # HeroSMS implementation (https://hero-sms.com/stubs/handler_api.php)
 # ---------------------------------------------------------------------------
 
@@ -1165,6 +1494,28 @@ def create_sms_provider(provider_key: str, config: dict) -> BaseSmsProvider:
             reuse_phone_to_max=_safe_bool(config.get("register_reuse_phone_to_max"), True),
             phone_success_max=max(0, _safe_int(config.get("register_phone_extra_max") or config.get("register_phone_success_max"), 3)),
         )
+    if provider_key in ("fivesim", "fivesim_api"):
+        api_key = str(config.get("fivesim_api_key", "") or "").strip()
+        if not api_key:
+            raise RuntimeError("5sim 未配置 API Token")
+        return FiveSimProvider(
+            api_key=api_key,
+            default_product=str(
+                config.get("sms_service")
+                or config.get("fivesim_product")
+                or config.get("fivesim_default_product")
+                or FIVESIM_DEFAULT_PRODUCT
+            ),
+            default_country=str(
+                config.get("sms_country")
+                or config.get("fivesim_country")
+                or config.get("fivesim_default_country")
+                or FIVESIM_DEFAULT_COUNTRY
+            ),
+            default_operator=str(config.get("fivesim_default_operator") or FIVESIM_DEFAULT_OPERATOR),
+            max_price=_safe_float(config.get("fivesim_max_price"), -1),
+            proxy=str(config.get("sms_proxy") or config.get("proxy") or "") or None,
+        )
     raise RuntimeError(f"未知的接码服务: {provider_key}")
 
 
@@ -1198,12 +1549,27 @@ class PhoneCallbackController:
 
             # 智能国家选择：如果启用了 auto_select_country，自动查询最优国家
             effective_country = self.country
-            auto_select = _safe_bool(self.config.get("herosms_auto_country") or self.config.get("smsbower_auto_country"), False)
-            if auto_select and isinstance(provider, HeroSmsProvider):
+            auto_select = _safe_bool(
+                self.config.get("fivesim_auto_country")
+                or self.config.get("herosms_auto_country")
+                or self.config.get("smsbower_auto_country"),
+                False,
+            )
+            if auto_select and isinstance(provider, (HeroSmsProvider, FiveSimProvider)):
                 self.log("正在查询最优国家（价格最低 + 库存充足）...")
                 try:
-                    min_stock = _safe_int(self.config.get("herosms_auto_country_min_stock") or self.config.get("smsbower_auto_country_min_stock"), 20)
-                    max_price_limit = _safe_float(self.config.get("herosms_auto_country_max_price") or self.config.get("smsbower_auto_country_max_price"), 0)
+                    min_stock = _safe_int(
+                        self.config.get("fivesim_auto_country_min_stock")
+                        or self.config.get("herosms_auto_country_min_stock")
+                        or self.config.get("smsbower_auto_country_min_stock"),
+                        20,
+                    )
+                    max_price_limit = _safe_float(
+                        self.config.get("fivesim_auto_country_max_price")
+                        or self.config.get("herosms_auto_country_max_price")
+                        or self.config.get("smsbower_auto_country_max_price"),
+                        0,
+                    )
                     best = provider.get_best_country(
                         service=self.service,
                         min_stock=min_stock,
@@ -1224,7 +1590,14 @@ class PhoneCallbackController:
                 self.activation = provider.get_number(service=self.service, country=effective_country)
             except Exception as first_exc:
                 # 如果是自动选择的国家失败了，回退到默认国家重试
-                fallback_country = self.country or self.config.get("sms_country") or self.config.get("herosms_country") or ""
+                fallback_country = (
+                    self.country
+                    or self.config.get("sms_country")
+                    or self.config.get("fivesim_country")
+                    or self.config.get("fivesim_default_country")
+                    or self.config.get("herosms_country")
+                    or ""
+                )
                 if auto_select and effective_country != fallback_country and fallback_country:
                     self.log(f"自动选择的国家({effective_country})获取号码失败，回退到默认国家({fallback_country})...")
                     try:

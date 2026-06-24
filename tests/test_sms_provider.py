@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import pytest
 from core.base_sms import (
+    FIVESIM_SERVICES,
+    FiveSimProvider,
     HeroSmsProvider,
     SmsActivation,
     SmsActivateProvider,
@@ -10,6 +12,8 @@ from core.base_sms import (
     create_phone_callbacks,
     SMS_ACTIVATE_SERVICES,
     SMS_ACTIVATE_COUNTRIES,
+    _resolve_fivesim_country,
+    _resolve_fivesim_product,
 )
 import core.base_sms as sms_module
 
@@ -70,6 +74,25 @@ class TestCreateSmsProvider:
     def test_herosms_missing_key(self):
         with pytest.raises(RuntimeError, match="HeroSMS 未配置"):
             create_sms_provider("herosms", {})
+
+    def test_fivesim(self):
+        provider = create_sms_provider(
+            "fivesim_api",
+            {
+                "fivesim_api_key": "token123",
+                "fivesim_default_product": "openai",
+                "fivesim_default_country": "england",
+                "fivesim_default_operator": "any",
+            },
+        )
+        assert isinstance(provider, FiveSimProvider)
+        assert provider.api_key == "token123"
+        assert provider.default_product == "openai"
+        assert provider.default_country == "england"
+
+    def test_fivesim_missing_key(self):
+        with pytest.raises(RuntimeError, match="5sim 未配置"):
+            create_sms_provider("fivesim_api", {})
 
     def test_unknown_provider(self):
         with pytest.raises(RuntimeError, match="未知"):
@@ -528,3 +551,77 @@ class TestHeroSmsWaitForCode:
             sms_module.time.sleep(1)
 
         assert sms_module._invoke_resend_callback_safe(slow_callback, timeout=0.1) is False
+
+
+class TestFiveSimMapping:
+    def test_chatgpt_maps_to_openai(self):
+        assert FIVESIM_SERVICES["chatgpt"] == "openai"
+        assert _resolve_fivesim_product("chatgpt", "") == "openai"
+
+    def test_country_alias_usa(self):
+        assert _resolve_fivesim_country("us", "") == "usa"
+        assert _resolve_fivesim_country("uk", "") == "england"
+
+
+class TestFiveSimProvider:
+    def test_get_balance(self, monkeypatch):
+        provider = FiveSimProvider("token123")
+
+        class FakeResp:
+            status_code = 200
+            text = '{"balance": 12.5}'
+
+            def json(self):
+                return {"balance": 12.5}
+
+        monkeypatch.setattr(provider, "_request", lambda path, **kwargs: FakeResp())
+        assert provider.get_balance() == 12.5
+
+    def test_get_number(self, monkeypatch):
+        provider = FiveSimProvider("token123", default_product="openai", default_country="england")
+
+        class FakeResp:
+            status_code = 200
+            text = '{"id": 99, "phone": "447700900123", "status": "PENDING"}'
+
+            def json(self):
+                return {"id": 99, "phone": "447700900123", "status": "PENDING"}
+
+        monkeypatch.setattr(provider, "_request", lambda path, **kwargs: FakeResp())
+        activation = provider.get_number(service="chatgpt", country="uk")
+        assert activation.activation_id == "99"
+        assert activation.phone_number == "+447700900123"
+        assert activation.country == "england"
+
+    def test_get_code_returns_sms_code(self, monkeypatch):
+        provider = FiveSimProvider("token123")
+        calls = {"n": 0}
+
+        def fake_check(activation_id):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return {"status": "RECEIVED", "sms": []}
+            return {"status": "RECEIVED", "sms": [{"code": "123456"}]}
+
+        monkeypatch.setattr(provider, "_check_order", fake_check)
+        monkeypatch.setattr(sms_module.time, "sleep", lambda _s: None)
+        assert provider.get_code("99", timeout=60) == "123456"
+
+    def test_get_code_cancels_on_timeout(self, monkeypatch):
+        provider = FiveSimProvider("token123")
+        cancelled = []
+
+        monkeypatch.setattr(provider, "_check_order", lambda activation_id: {"status": "PENDING", "sms": []})
+        monkeypatch.setattr(provider, "cancel", lambda activation_id: cancelled.append(activation_id) or True)
+        monkeypatch.setattr(sms_module.time, "sleep", lambda _s: None)
+
+        start = sms_module.time.time()
+
+        def fake_time():
+            fake_time.counter += 1
+            return start + fake_time.counter * 100
+
+        fake_time.counter = 0
+        monkeypatch.setattr(sms_module.time, "time", fake_time)
+        assert provider.get_code("99", timeout=60) == ""
+        assert cancelled == ["99"]
