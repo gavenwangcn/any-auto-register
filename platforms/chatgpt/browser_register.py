@@ -4,6 +4,7 @@ import json
 import random
 import re
 import secrets
+import threading
 import time
 import uuid
 from typing import Callable, Optional
@@ -21,6 +22,86 @@ from .constants import (
     SENTINEL_BASE,
     OAUTH_CONSENT_FORM_SELECTOR,
 )
+
+BROWSER_CLOSE_TIMEOUT = 8.0
+SIGNUP_ENTRY_TRANSITION_TIMEOUT = 20
+_BROWSER_CONNECTION_ERROR_MARKERS = (
+    "connection closed",
+    "target page, context or browser has been closed",
+    "browser has been closed",
+    "target closed",
+    "session closed",
+    "disconnected",
+    "pipe closed",
+)
+
+
+def _is_browser_connection_error(exc: BaseException) -> bool:
+    text = str(exc or "").lower()
+    return any(marker in text for marker in _BROWSER_CONNECTION_ERROR_MARKERS)
+
+
+def _ensure_page_alive(page, *, action: str = "browser operation") -> None:
+    try:
+        page.evaluate("() => true")
+    except Exception as exc:
+        if _is_browser_connection_error(exc):
+            raise RuntimeError(f"浏览器驱动已断开({action}): {exc}") from exc
+        raise
+
+
+def _close_camoufox_context(ctx, log, *, timeout: float = BROWSER_CLOSE_TIMEOUT) -> None:
+    if ctx is None:
+        return
+    errors: list[BaseException] = []
+
+    def _do_close() -> None:
+        try:
+            ctx.__exit__(None, None, None)
+        except Exception as exc:
+            errors.append(exc)
+
+    thread = threading.Thread(target=_do_close, daemon=True)
+    thread.start()
+    thread.join(timeout=timeout)
+    if thread.is_alive():
+        log(f"浏览器关闭超时({int(timeout)}s)，强制结束任务")
+        return
+    if errors:
+        log(f"浏览器关闭异常(已忽略): {errors[0]}")
+
+
+def _wait_for_page_transition(
+    page,
+    log,
+    *,
+    timeout: int,
+    context: str,
+    get_state,
+    success_page_types: set[str],
+    on_password_page=None,
+) -> dict:
+    deadline = time.time() + timeout
+    passwordless_clicked = False
+    while time.time() < deadline:
+        _ensure_page_alive(page, action=context)
+        if not passwordless_clicked:
+            if _click_passwordless_login_if_available(page, log, context=context):
+                passwordless_clicked = True
+                time.sleep(1.2)
+                continue
+        state = get_state(page)
+        page_type = str(state.get("page_type") or "")
+        if page_type in success_page_types:
+            if callable(on_password_page) and on_password_page(page, log, page_type, state):
+                continue
+            return state
+        error_text = _extract_auth_error_text(page)
+        if error_text:
+            raise RuntimeError(f"{context}失败: {error_text[:300]}")
+        time.sleep(0.35)
+    raise RuntimeError(f"{context}后未进入下一注册页面")
+
 
 EMAIL_INPUT_SELECTORS = [
     'input#login-email',
@@ -1165,14 +1246,19 @@ def _recover_signup_password_page(page, log) -> bool:
     return True
 
 
-def _wait_for_signup_entry_transition(page, log, timeout: int = 20) -> dict:
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        if _click_passwordless_login_if_available(page, log, context="邮箱页提交后"):
-            time.sleep(0.5)
-            continue
-        state = _derive_registration_state_from_page(page)
-        if state.get("page_type") in {
+def _wait_for_signup_entry_transition(page, log, timeout: int = SIGNUP_ENTRY_TRANSITION_TIMEOUT) -> dict:
+    def _on_password_page(page_obj, log_fn, page_type, state):
+        if page_type == "login_password" and _recover_signup_password_page(page_obj, log_fn):
+            return True
+        return False
+
+    return _wait_for_page_transition(
+        page,
+        log,
+        timeout=timeout,
+        context="邮箱页提交",
+        get_state=_derive_registration_state_from_page,
+        success_page_types={
             "create_account_password",
             "login_password",
             "email_otp_verification",
@@ -1180,15 +1266,9 @@ def _wait_for_signup_entry_transition(page, log, timeout: int = 20) -> dict:
             "add_phone",
             "chatgpt_home",
             "oauth_callback",
-        }:
-            if state.get("page_type") == "login_password" and _recover_signup_password_page(page, log):
-                return _derive_registration_state_from_page(page)
-            return state
-        error_text = _extract_auth_error_text(page)
-        if error_text:
-            raise RuntimeError(f"邮箱页提交失败: {error_text[:300]}")
-        time.sleep(0.25)
-    raise RuntimeError("邮箱页提交后未进入密码/验证码页面")
+        },
+        on_password_page=_on_password_page,
+    )
 
 
 def _start_browser_signup_via_page(page, email: str, log) -> dict:
@@ -1858,14 +1938,18 @@ def _submit_login_email_via_page(page, email: str, log) -> dict:
     else:
         raise RuntimeError("OAuth 邮箱页未找到 Continue 按钮")
 
-    deadline = time.time() + 20
+    deadline = time.time() + SIGNUP_ENTRY_TRANSITION_TIMEOUT
     last_url = start_url
+    passwordless_clicked = False
     while time.time() < deadline:
+        _ensure_page_alive(page, action="OAuth 邮箱页提交")
         current_url = str(page.url or "")
         last_url = current_url or last_url
-        if _click_passwordless_login_if_available(page, log, context="OAuth 邮箱页提交后"):
-            time.sleep(0.5)
-            continue
+        if not passwordless_clicked:
+            if _click_passwordless_login_if_available(page, log, context="OAuth 邮箱页提交后"):
+                passwordless_clicked = True
+                time.sleep(1.2)
+                continue
         state = _derive_oauth_state_from_page(page)
         page_type = str(state.get("page_type") or "")
         if page_type in {
@@ -2546,13 +2630,16 @@ def _browser_authorize(page, auth_url: str, log) -> str:
     if not auth_url:
         return ""
     try:
+        _ensure_page_alive(page, action="authorize 跳转")
         page.goto(auth_url, wait_until="domcontentloaded", timeout=30000)
         final_url = page.url
         log(f"Authorize -> {final_url[:120]}")
         return final_url
     except Exception as exc:
         log(f"Authorize 失败: {exc}")
-        return ""
+        if _is_browser_connection_error(exc):
+            raise RuntimeError(f"浏览器驱动已断开(authorize): {exc}") from exc
+        raise RuntimeError(f"访问 authorize URL 失败: {exc}") from exc
 
 
 def _validate_browser_email_otp(page, code: str, device_id: str, user_agent: str, referer: str) -> dict:
@@ -3855,7 +3942,11 @@ def _browser_registration_flow(page, email: str, password: str, otp_callback, ph
         state = _start_browser_signup_via_page(page, email, log)
     except Exception as exc:
         log(f"页面驱动注册入口失败，回退 ChatGPT authorize 入口: {exc}")
-        state = _start_browser_signup_via_authorize(page, email, device_id, log)
+        _ensure_page_alive(page, action="authorize 回退")
+        try:
+            state = _start_browser_signup_via_authorize(page, email, device_id, log)
+        except Exception as authorize_exc:
+            raise RuntimeError(f"注册入口失败且 authorize 回退失败: {authorize_exc}") from authorize_exc
     auth_cookies = _get_cookies(page)
     log(
         "授权态 cookies: "
@@ -3867,6 +3958,7 @@ def _browser_registration_flow(page, email: str, password: str, otp_callback, ph
     seen_states: dict[str, int] = {}
 
     for step in range(12):
+        _ensure_page_alive(page, action=f"注册状态 step={step + 1}")
         signature = "|".join(
             [
                 str(state.get("page_type") or ""),
@@ -4017,7 +4109,9 @@ class ChatGPTBrowserRegister:
             launch_opts["proxy"] = proxy
             launch_opts["geoip"] = True
 
-        with Camoufox(**launch_opts) as browser:
+        ctx = Camoufox(**launch_opts)
+        try:
+            browser = ctx.__enter__()
             page = browser.new_page()
             self.log("启动浏览器上下文注册状态机")
             final_state = _browser_registration_flow(
@@ -4037,6 +4131,8 @@ class ChatGPTBrowserRegister:
             # 注册完成后的浏览器上下文 session 状态不稳定（NS_BINDING_ABORTED），
             # 直接用全新浏览器做 OAuth 更可靠
             self.log("执行 Codex CLI OAuth 流程获取 token...")
+        finally:
+            _close_camoufox_context(ctx, self.log)
 
         # 直接用全新浏览器做 OAuth（注册后的浏览器上下文不可靠）
         codex_result = self._retry_oauth_fresh_browser(email, password)
@@ -4060,15 +4156,17 @@ class ChatGPTBrowserRegister:
         launch_opts = {"headless": self.headless}
         if proxy:
             launch_opts["proxy"] = proxy
+        ctx = Camoufox(**launch_opts)
         try:
-            with Camoufox(**launch_opts) as browser:
-                page = browser.new_page()
-                self.log("  全新浏览器 OAuth 开始...")
-                result = _do_codex_oauth(
-                    page, {}, email, password,
-                    self.otp_callback, self.phone_callback, self.proxy, self.log,
-                )
-                return result
+            browser = ctx.__enter__()
+            page = browser.new_page()
+            self.log("  全新浏览器 OAuth 开始...")
+            return _do_codex_oauth(
+                page, {}, email, password,
+                self.otp_callback, self.phone_callback, self.proxy, self.log,
+            )
         except Exception as e:
             self.log(f"  全新浏览器 OAuth 异常: {e}")
             return None
+        finally:
+            _close_camoufox_context(ctx, self.log)
