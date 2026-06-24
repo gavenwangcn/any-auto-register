@@ -189,6 +189,8 @@ FIVESIM_BASE_URL = "https://5sim.net/v1"
 FIVESIM_DEFAULT_PRODUCT = "openai"
 FIVESIM_DEFAULT_COUNTRY = "england"
 FIVESIM_DEFAULT_OPERATOR = "any"
+FIVESIM_TERMINAL_STATUSES = frozenset({"CANCELED", "TIMEOUT", "BANNED", "FINISHED"})
+FIVESIM_FAILED_STATUSES = frozenset({"CANCELED", "TIMEOUT", "BANNED"})
 
 FIVESIM_SERVICES = {
     "cursor": "other",
@@ -252,12 +254,20 @@ class FiveSimProvider(BaseSmsProvider):
         default_operator: str = FIVESIM_DEFAULT_OPERATOR,
         max_price: float = -1,
         proxy: str | None = None,
+        reuse: bool = False,
+        forwarding: bool = False,
+        voice: bool = False,
+        ref: str = "",
     ):
         self.api_key = str(api_key or "").strip()
         self.default_product = _resolve_fivesim_product("", default_product)
         self.default_country = _resolve_fivesim_country("", default_country)
         self.default_operator = str(default_operator or FIVESIM_DEFAULT_OPERATOR).strip() or FIVESIM_DEFAULT_OPERATOR
         self.max_price = float(max_price or -1)
+        self.reuse = bool(reuse)
+        self.forwarding = bool(forwarding)
+        self.voice = bool(voice)
+        self.ref = str(ref or "").strip()
         self.proxy = _normalize_hero_proxy(proxy)
         self.proxies = {"http": self.proxy, "https": self.proxy} if self.proxy else None
         self.openai_resend_callback: Callable[[], None] | None = None
@@ -284,10 +294,12 @@ class FiveSimProvider(BaseSmsProvider):
         if resp.status_code == 401:
             raise RuntimeError("5sim: API Token 无效或未授权")
         text = str(resp.text or "").strip()
+        lowered = text.lower()
+        # 文档: 购买接口可能返回 200 + 纯文本 "no free phones"
+        if lowered == "no free phones":
+            raise RuntimeError("5sim: 当前无可用号码")
         if resp.status_code == 404:
             raise RuntimeError(f"5sim: {action} 未找到")
-        if text.lower() == "no free phones":
-            raise RuntimeError("5sim: 当前无可用号码")
         if resp.status_code >= 400:
             raise RuntimeError(f"5sim {action} 失败 ({resp.status_code}): {text[:200]}")
         if not text:
@@ -300,9 +312,40 @@ class FiveSimProvider(BaseSmsProvider):
             raise RuntimeError(f"5sim {action} 返回格式异常")
         return data
 
+    def _extract_sms_code(self, order: dict) -> str:
+        sms_list = order.get("sms") or []
+        if not isinstance(sms_list, list):
+            return ""
+        for item in reversed(sms_list):
+            if not isinstance(item, dict):
+                continue
+            code = str(item.get("code") or "").strip()
+            if code:
+                return code
+        return ""
+
+    def get_profile(self) -> dict:
+        """GET /user/profile — 账户余额、评级等（文档 User > Balance）。"""
+        data = self._parse_json_response(self._request("/user/profile"), action="getProfile")
+        return {
+            "id": data.get("id"),
+            "email": data.get("email"),
+            "balance": float(data.get("balance") or 0),
+            "rating": float(data.get("rating") or 0),
+            "frozen_balance": float(data.get("frozen_balance") or 0),
+            "default_country": data.get("default_country"),
+            "default_operator": data.get("default_operator"),
+            "vendor": data.get("vendor"),
+        }
+
     def get_balance(self) -> float:
-        data = self._parse_json_response(self._request("/user/profile"), action="getBalance")
-        return float(data.get("balance") or 0)
+        return float(self.get_profile().get("balance") or 0)
+
+    def get_notifications(self, lang: str = "en") -> str:
+        """GET /guest/flash/{lang} — 平台通知（文档 Notifications）。"""
+        path = f"/guest/flash/{_fivesim_path_segment(lang or 'en')}"
+        data = self._parse_json_response(self._request(path), action="getNotifications")
+        return str(data.get("text") or "")
 
     def get_countries(self) -> list[dict]:
         data = self._parse_json_response(self._request("/guest/countries", auth=False), action="getCountries")
@@ -404,9 +447,18 @@ class FiveSimProvider(BaseSmsProvider):
         product = _resolve_fivesim_product(service, self.default_product)
         country_slug = _resolve_fivesim_country(country, self.default_country)
         operator = _fivesim_path_segment(self.default_operator)
-        params: dict[str, str | int] = {}
-        if self.max_price > 0:
-            params["maxPrice"] = int(self.max_price)
+        # 文档: maxPrice 为 query number，仅 operator=any 时生效
+        params: dict[str, str | int | float] = {}
+        if self.max_price > 0 and self.default_operator.lower() == "any":
+            params["maxPrice"] = self.max_price
+        if self.reuse:
+            params["reuse"] = "1"
+        if self.forwarding:
+            params["forwarding"] = "1"
+        if self.voice:
+            params["voice"] = "1"
+        if self.ref:
+            params["ref"] = self.ref
         path = (
             f"/user/buy/activation/"
             f"{_fivesim_path_segment(country_slug)}/"
@@ -421,11 +473,13 @@ class FiveSimProvider(BaseSmsProvider):
         return SmsActivation(
             activation_id=activation_id,
             phone_number=phone if phone.startswith("+") else f"+{phone.lstrip('+')}",
-            country=country_slug,
+            country=str(data.get("country") or country_slug),
             metadata={
                 "operator": data.get("operator"),
-                "product": product,
+                "product": data.get("product") or product,
                 "status": data.get("status"),
+                "price": data.get("price"),
+                "expires": data.get("expires"),
             },
         )
 
@@ -453,19 +507,17 @@ class FiveSimProvider(BaseSmsProvider):
                 continue
 
             status = str(order.get("status") or "").upper()
-            if status in {"CANCELED", "TIMEOUT", "BANNED"}:
-                _log(f"5sim 订单结束: activation_id={activation_id} status={status}")
-                return ""
+            code = self._extract_sms_code(order)
+            if code:
+                self.last_code_result = {"status": "ok", "code": code, "source": "5sim", "order_status": status}
+                return code
 
-            sms_list = order.get("sms") or []
-            if isinstance(sms_list, list):
-                for item in reversed(sms_list):
-                    if not isinstance(item, dict):
-                        continue
-                    code = str(item.get("code") or "").strip()
-                    if code:
-                        self.last_code_result = {"status": "ok", "code": code, "source": "5sim"}
-                        return code
+            if status in FIVESIM_TERMINAL_STATUSES:
+                if status in FIVESIM_FAILED_STATUSES:
+                    _log(f"5sim 订单结束: activation_id={activation_id} status={status}")
+                else:
+                    _log(f"5sim 订单已完成但未收到验证码: activation_id={activation_id} status={status}")
+                return ""
 
             now = time.time()
             if now - last_log_at >= HERO_SMS_POLL_LOG_INTERVAL:
@@ -1515,6 +1567,10 @@ def create_sms_provider(provider_key: str, config: dict) -> BaseSmsProvider:
             default_operator=str(config.get("fivesim_default_operator") or FIVESIM_DEFAULT_OPERATOR),
             max_price=_safe_float(config.get("fivesim_max_price"), -1),
             proxy=str(config.get("sms_proxy") or config.get("proxy") or "") or None,
+            reuse=_safe_bool(config.get("fivesim_reuse"), False),
+            forwarding=_safe_bool(config.get("fivesim_forwarding"), False),
+            voice=_safe_bool(config.get("fivesim_voice"), False),
+            ref=str(config.get("fivesim_ref") or ""),
         )
     raise RuntimeError(f"未知的接码服务: {provider_key}")
 

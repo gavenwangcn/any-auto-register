@@ -569,13 +569,40 @@ class TestFiveSimProvider:
 
         class FakeResp:
             status_code = 200
-            text = '{"balance": 12.5}'
+            text = '{"balance": 12.5, "rating": 96, "email": "a@b.com", "frozen_balance": 0}'
 
             def json(self):
-                return {"balance": 12.5}
+                return {"balance": 12.5, "rating": 96, "email": "a@b.com", "frozen_balance": 0}
 
         monkeypatch.setattr(provider, "_request", lambda path, **kwargs: FakeResp())
+        profile = provider.get_profile()
+        assert profile["balance"] == 12.5
+        assert profile["rating"] == 96
         assert provider.get_balance() == 12.5
+
+    def test_no_free_phones_plain_text(self, monkeypatch):
+        provider = FiveSimProvider("token123")
+
+        class FakeResp:
+            status_code = 200
+            text = "no free phones"
+
+            def json(self):
+                raise ValueError("not json")
+
+        monkeypatch.setattr(provider, "_request", lambda path, **kwargs: FakeResp())
+        with pytest.raises(RuntimeError, match="无可用号码"):
+            provider.get_number(service="openai", country="england")
+
+    def test_get_code_finishes_on_finished_status(self, monkeypatch):
+        provider = FiveSimProvider("token123")
+        monkeypatch.setattr(
+            provider,
+            "_check_order",
+            lambda activation_id: {"status": "FINISHED", "sms": []},
+        )
+        monkeypatch.setattr(sms_module.time, "sleep", lambda _s: None)
+        assert provider.get_code("99", timeout=60) == ""
 
     def test_get_number(self, monkeypatch):
         provider = FiveSimProvider("token123", default_product="openai", default_country="england")

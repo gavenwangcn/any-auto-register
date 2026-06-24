@@ -249,6 +249,10 @@ def _fivesim_from_payload(payload: HeroSmsQueryRequest | None = None) -> FiveSim
         default_operator=str(saved.get("fivesim_default_operator") or "any"),
         max_price=_safe_float(saved.get("fivesim_max_price"), -1),
         proxy=str(payload.proxy or saved.get("sms_proxy") or saved.get("proxy") or "") or None,
+        reuse=bool(saved.get("fivesim_reuse")),
+        forwarding=bool(saved.get("fivesim_forwarding")),
+        voice=bool(saved.get("fivesim_voice")),
+        ref=str(saved.get("fivesim_ref") or ""),
     )
 
 
@@ -281,7 +285,24 @@ def fivesim_balance(body: HeroSmsQueryRequest | None = None):
     if not provider.api_key:
         raise HTTPException(400, "5sim API Token 未配置")
     try:
-        return {"balance": provider.get_balance()}
+        profile = provider.get_profile()
+        return {
+            "balance": profile.get("balance"),
+            "rating": profile.get("rating"),
+            "email": profile.get("email"),
+            "frozen_balance": profile.get("frozen_balance"),
+        }
+    except Exception as exc:
+        raise HTTPException(502, str(exc))
+
+
+@router.get("/fivesim/notifications")
+def fivesim_notifications(lang: str = "en"):
+    try:
+        provider = _fivesim_from_payload()
+        if not provider.api_key:
+            return {"text": ""}
+        return {"text": provider.get_notifications(lang=lang)}
     except Exception as exc:
         raise HTTPException(502, str(exc))
 
