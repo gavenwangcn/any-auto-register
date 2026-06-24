@@ -260,8 +260,6 @@ def _fivesim_from_payload(payload: HeroSmsQueryRequest | None = None) -> FiveSim
 def fivesim_countries():
     try:
         provider = _fivesim_from_payload()
-        if not provider.api_key:
-            return {"countries": []}
         return {"countries": provider.get_countries()}
     except Exception as exc:
         raise HTTPException(502, str(exc))
@@ -271,8 +269,6 @@ def fivesim_countries():
 def fivesim_products(country: str = ""):
     try:
         provider = _fivesim_from_payload(HeroSmsQueryRequest(country=country))
-        if not provider.api_key:
-            return {"products": []}
         return {"products": provider.get_products(country=country or None)}
     except Exception as exc:
         raise HTTPException(502, str(exc))

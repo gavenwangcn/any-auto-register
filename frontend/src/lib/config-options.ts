@@ -15,6 +15,12 @@ export type ProviderField = {
   asyncUrl?: string
   asyncValueKey?: string
   asyncLabelKey?: string
+  /** 依赖的表单字段 key，变化时重新加载 async-select 选项 */
+  asyncDependsOn?: string
+  /** 依赖字段值作为 query 参数名，如 country */
+  asyncQueryParam?: string
+  /** 响应 JSON 中的列表字段名，默认自动推断 */
+  asyncListKey?: string
 }
 
 export type ProviderOption = {
