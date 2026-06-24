@@ -118,6 +118,8 @@ def build_phone_callbacks(ctx: RegistrationContext, *, service: str | None = Non
     country = str(
         merged.get("sms_country")
         or merged.get("phone_country")
+        or merged.get("fivesim_country")
+        or merged.get("fivesim_default_country")
         or merged.get("sms_activate_country")
         or merged.get("sms_activate_default_country")
         or merged.get("herosms_country")
@@ -128,6 +130,10 @@ def build_phone_callbacks(ctx: RegistrationContext, *, service: str | None = Non
     ).strip()
     sms_service = str(
         merged.get("sms_service")
+        or merged.get("fivesim_service")
+        or merged.get("fivesim_default_service")
+        or merged.get("fivesim_product")
+        or merged.get("fivesim_default_product")
         or merged.get("herosms_service")
         or merged.get("herosms_default_service")
         or merged.get("smsbower_service")

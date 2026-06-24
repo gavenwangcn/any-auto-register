@@ -2309,6 +2309,20 @@ def _is_invalid_phone_otp_response(result: dict) -> bool:
     return "invalid otp code" in text
 
 
+def _resolve_max_phone_attempts(phone_callback, default: int = 2) -> int:
+    config = getattr(phone_callback, "config", None) or {}
+    raw = (
+        config.get("register_phone_max_attempts")
+        or config.get("register_phone_attempts_max")
+        or config.get("add_phone_max_attempts")
+    )
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = default
+    return max(1, min(value, 5))
+
+
 def _handle_add_phone_challenge(
     page,
     phone_callback,
@@ -2317,13 +2331,15 @@ def _handle_add_phone_challenge(
     user_agent: str,
     log,
     resume_url: str = "",
-    max_phone_attempts: int = 3,
+    max_phone_attempts: int | None = None,
 ) -> dict:
     """在 add-phone 页面通过 UI 交互完成手机号验证。
 
     流程: 选择国家 -> 输入本地号码 -> 点击发送 -> 填写 OTP -> 点击验证。
-    如果验证码超时未收到，自动换号重试（最多 max_phone_attempts 次）。
+    如果验证码超时未收到，自动换号重试（最多 max_phone_attempts 次，默认 2）。
     """
+    if max_phone_attempts is None:
+        max_phone_attempts = _resolve_max_phone_attempts(phone_callback, default=2)
     if not phone_callback:
         raise RuntimeError(
             "ChatGPT 注册遇到手机号验证，但未配置 phone_callback。"
@@ -2369,8 +2385,9 @@ def _handle_add_phone_challenge(
                 phone_callback.phase = "need_number"
                 phone_callback.activation = None
                 phone_callback.completed = False
+                phone_callback._activation_cancelled = False
 
-    raise last_error or RuntimeError("短信验证失败: 多次换号均未收到验证码")
+    raise last_error or RuntimeError(f"短信验证失败: {max_phone_attempts} 次换号均未收到验证码")
 
 
 def _do_add_phone_attempt(

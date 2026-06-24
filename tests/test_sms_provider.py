@@ -663,6 +663,11 @@ class TestFiveSimProvider:
         monkeypatch.setattr(sms_module.time, "sleep", lambda _s: None)
         assert provider.get_code("99", timeout=60) == "123456"
 
+    def test_extract_sms_code_from_text(self):
+        provider = FiveSimProvider("token123")
+        order = {"sms": [{"text": "OpenAI: 654321 is your code", "code": ""}]}
+        assert provider._extract_sms_code(order) == "654321"
+
     def test_get_code_cancels_on_timeout(self, monkeypatch):
         provider = FiveSimProvider("token123")
         cancelled = []

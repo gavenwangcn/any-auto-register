@@ -444,6 +444,7 @@ _BUILTIN_DEFINITIONS: list[dict] = [
             {"key": "fivesim_auto_country_min_stock", "label": "自动选国最低库存", "placeholder": "20"},
             {"key": "fivesim_auto_country_max_price", "label": "自动选国最高价格", "placeholder": "0 (不限)"},
             {"key": "sms_code_wait_timeout", "label": "短信等待超时 (秒)", "placeholder": "180"},
+            {"key": "register_phone_max_attempts", "label": "换号重试次数", "placeholder": "2", "hint": "验证码超时后最多换号重试次数，默认 2"},
         ],
     },
     # ── proxy ────────────────────────────────────────────────────────

@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import threading
 import time
 from abc import ABC, abstractmethod
@@ -191,6 +192,7 @@ FIVESIM_DEFAULT_COUNTRY = "england"
 FIVESIM_DEFAULT_OPERATOR = "any"
 FIVESIM_TERMINAL_STATUSES = frozenset({"CANCELED", "TIMEOUT", "BANNED", "FINISHED"})
 FIVESIM_FAILED_STATUSES = frozenset({"CANCELED", "TIMEOUT", "BANNED"})
+FIVESIM_OPENAI_RESEND_AFTER = 90
 _FIVESIM_LABELS_LOCK = threading.Lock()
 _FIVESIM_SERVICE_LABELS: dict[str, str] | None = None
 
@@ -363,6 +365,11 @@ class FiveSimProvider(BaseSmsProvider):
             code = str(item.get("code") or "").strip()
             if code:
                 return code
+            text = str(item.get("text") or "")
+            if text:
+                match = re.search(r"\b(\d{4,8})\b", text)
+                if match:
+                    return match.group(1)
         return ""
 
     def get_profile(self) -> dict:
@@ -614,6 +621,7 @@ class FiveSimProvider(BaseSmsProvider):
         start = time.time()
         last_log_at = start
         round_num = 0
+        openai_resent = False
         _log = log_fn or (lambda _msg: None)
 
         while time.time() < deadline:
@@ -638,13 +646,28 @@ class FiveSimProvider(BaseSmsProvider):
                     _log(f"5sim 订单已完成但未收到验证码: activation_id={activation_id} status={status}")
                 return ""
 
+            elapsed = int(time.time() - start)
+            if (
+                not openai_resent
+                and elapsed >= FIVESIM_OPENAI_RESEND_AFTER
+                and self.openai_resend_callback
+            ):
+                _log(
+                    f"等待 {FIVESIM_OPENAI_RESEND_AFTER}s 未收到短信，尝试 OpenAI Resend "
+                    f"(activation_id={activation_id})"
+                )
+                openai_resent = _invoke_resend_callback_safe(self.openai_resend_callback)
+                if openai_resent:
+                    _log("OpenAI Resend 已触发，继续等待 5sim 短信...")
+
             now = time.time()
             if now - last_log_at >= HERO_SMS_POLL_LOG_INTERVAL:
-                elapsed = int(now - start)
                 remaining = max(0, int(deadline - now))
+                sms_count = len(order.get("sms") or []) if isinstance(order.get("sms"), list) else 0
                 _log(
                     f"轮询短信验证码 round={round_num} activation_id={activation_id} "
-                    f"status={status or '-'} elapsed={elapsed}s/{wait_timeout}s remaining={remaining}s"
+                    f"status={status or '-'} sms_count={sms_count} "
+                    f"elapsed={elapsed}s/{wait_timeout}s remaining={remaining}s"
                 )
                 last_log_at = now
             time.sleep(3)
@@ -658,6 +681,9 @@ class FiveSimProvider(BaseSmsProvider):
             self._parse_json_response(self._request(path), action="cancelOrder")
             return True
         except Exception as exc:
+            msg = str(exc).lower()
+            if "order not found" in msg or "not found" in msg:
+                return True
             logger.warning("5sim cancel failed: %s", exc)
             return False
 
@@ -1711,6 +1737,21 @@ class PhoneCallbackController:
         self.completed = False
         self._verify_lock_acquired = False
         self.awaiting_external_success = False
+        self._activation_cancelled = False
+
+    def _resolve_effective_country(self, provider: BaseSmsProvider) -> str:
+        return str(
+            self.country
+            or self.config.get("sms_country")
+            or self.config.get("fivesim_country")
+            or self.config.get("fivesim_default_country")
+            or self.config.get("herosms_country")
+            or self.config.get("herosms_default_country")
+            or self.config.get("smsbower_country")
+            or self.config.get("smsbower_default_country")
+            or getattr(provider, "default_country", "")
+            or ""
+        ).strip()
 
     def _provider(self) -> BaseSmsProvider:
         if self.provider is None:
@@ -1725,7 +1766,7 @@ class PhoneCallbackController:
                 self._verify_lock_acquired = True
 
             # 智能国家选择：如果启用了 auto_select_country，自动查询最优国家
-            effective_country = self.country
+            effective_country = self._resolve_effective_country(provider)
             auto_select = _safe_bool(
                 self.config.get("fivesim_auto_country")
                 or self.config.get("herosms_auto_country")
@@ -1760,7 +1801,7 @@ class PhoneCallbackController:
                 except Exception as exc:
                     self.log(f"智能国家选择失败({exc})，使用默认配置")
 
-            country_label = effective_country or self.config.get("sms_country") or self.config.get("sms_activate_country") or "default"
+            country_label = effective_country or "default"
             self.log(f"已进入 add_phone，准备租用手机号: provider={self.provider_key} service={self.service} country={country_label}")
             self.log(f"正在从 {self.provider_key} 获取手机号...")
             try:
@@ -1817,6 +1858,7 @@ class PhoneCallbackController:
                     self.awaiting_external_success = True
             else:
                 self.log(f"⚠️ 未收到验证码: activation_id={self.activation.activation_id}")
+                self._activation_cancelled = True
             return code
         return ""
 
@@ -1865,7 +1907,7 @@ class PhoneCallbackController:
                 provider = self._provider()
                 if self.awaiting_external_success and not getattr(provider, "auto_report_success_on_code", True):
                     self.report_success()
-                else:
+                elif not self._activation_cancelled:
                     provider.cancel(self.activation.activation_id)
                     self.log(f"已释放未使用号码: activation_id={self.activation.activation_id}")
             except Exception:
