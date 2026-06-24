@@ -3,15 +3,16 @@ services:
     build: .
     ports:
       - "8000:8000"   # FastAPI / Web UI
-      - "6080:6080"   # noVNC (headed 浏览器预览)
+      - "6080:6080"   # noVNC (headed 浏览器预览) — 云服务器安全组需放行此端口
       - "8889:8889"   # Turnstile Solver
     environment:
       - DISPLAY=:99
       - ACCOUNT_MANAGER_DATABASE_URL=sqlite:////app/data/account_manager.db
       # 可选：设置访问密码，不设置则无密码保护
       # - APP_PASSWORD=changeme
-      # 可选：设置 VNC 密码
+      # 可选：VNC 密码（noVNC 连接时会提示）
       # - VNC_PASSWORD=changeme
     volumes:
       - ./data:/app/data   # 持久化 SQLite 数据库
+    shm_size: "1gb"         # Camoufox/Firefox 建议 ≥1GB
     restart: unless-stopped
