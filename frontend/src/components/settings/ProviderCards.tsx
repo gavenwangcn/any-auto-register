@@ -177,6 +177,17 @@ function EditModal({
           else if (data?.services) items = data.services
           else if (data?.data) items = Array.isArray(data.data) ? data.data : []
 
+          if (import.meta.env.DEV || items.length === 0) {
+            console.info('[async-select]', field.key, {
+              url,
+              depKey,
+              depValue,
+              responseKeys: data && typeof data === 'object' ? Object.keys(data) : [],
+              itemCount: items.length,
+              meta: data?.meta,
+            })
+          }
+
           const options = items.map((item: any) => {
             if (typeof item === 'object') {
               const v = String(item[valueKey] ?? item.id ?? item.code ?? item.country ?? '')

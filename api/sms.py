@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
@@ -13,6 +15,8 @@ from core.base_sms import (
     SmsBowerProvider,
 )
 from infrastructure.provider_settings_repository import ProviderSettingsRepository
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/sms", tags=["sms"])
 
@@ -260,18 +264,62 @@ def _fivesim_from_payload(payload: HeroSmsQueryRequest | None = None) -> FiveSim
 def fivesim_countries():
     try:
         provider = _fivesim_from_payload()
-        return {"countries": provider.get_countries()}
+        countries = provider.get_countries()
+        logger.info("5sim countries: count=%s", len(countries))
+        return {"countries": countries}
     except Exception as exc:
-        raise HTTPException(502, str(exc))
+        logger.exception("5sim countries failed: %s", exc)
+        raise HTTPException(502, str(exc)) from exc
 
 
 @router.get("/fivesim/products")
-def fivesim_products(country: str = ""):
+def fivesim_products(country: str = "", debug: bool = False):
+    saved = _saved_fivesim_config()
+    effective_country = (
+        str(country or "").strip()
+        or str(saved.get("fivesim_default_country") or "").strip()
+        or str(saved.get("sms_country") or "").strip()
+    )
+    operator = str(saved.get("fivesim_default_operator") or "any").strip() or "any"
+    logger.info(
+        "5sim products request: query_country=%r saved_country=%r effective_country=%r operator=%r",
+        country,
+        saved.get("fivesim_default_country"),
+        effective_country,
+        operator,
+    )
     try:
-        provider = _fivesim_from_payload(HeroSmsQueryRequest(country=country))
-        return {"products": provider.get_products(country=country or None)}
+        provider = _fivesim_from_payload(HeroSmsQueryRequest(country=effective_country))
+        products, meta = provider.get_products(country=effective_country or None, with_meta=True)
+        logger.info(
+            "5sim products response: country=%r operator=%r count=%s source=%s raw_keys=%s filtered_hosting=%s",
+            meta.get("country"),
+            meta.get("operator"),
+            len(products),
+            meta.get("source"),
+            meta.get("raw_keys"),
+            meta.get("filtered_hosting"),
+        )
+        if not products:
+            logger.warning(
+                "5sim products empty: country=%r path=%r upstream_status=%s upstream_preview=%r",
+                meta.get("country"),
+                meta.get("path"),
+                meta.get("upstream_status"),
+                meta.get("upstream_preview"),
+            )
+        payload: dict = {"products": products}
+        if debug:
+            payload["meta"] = meta
+        return payload
     except Exception as exc:
-        raise HTTPException(502, str(exc))
+        logger.exception(
+            "5sim products failed: query_country=%r effective_country=%r error=%s",
+            country,
+            effective_country,
+            exc,
+        )
+        raise HTTPException(502, str(exc)) from exc
 
 
 @router.post("/fivesim/balance")

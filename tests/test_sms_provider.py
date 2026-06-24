@@ -604,6 +604,30 @@ class TestFiveSimProvider:
         monkeypatch.setattr(sms_module.time, "sleep", lambda _s: None)
         assert provider.get_code("99", timeout=60) == ""
 
+    def test_get_products_fallback_to_prices(self, monkeypatch):
+        provider = FiveSimProvider("token123", default_country="usa")
+
+        class EmptyResp:
+            status_code = 200
+            text = "{}"
+
+            def json(self):
+                return {}
+
+        monkeypatch.setattr(provider, "_request", lambda path, **kwargs: EmptyResp())
+        monkeypatch.setattr(
+            provider,
+            "get_prices",
+            lambda **kwargs: {
+                "usa": {
+                    "openai": {"virtual60": {"cost": 4, "count": 10}},
+                },
+            },
+        )
+        rows, meta = provider.get_products(country="usa", with_meta=True)
+        assert meta["source"] == "guest_prices_fallback"
+        assert any(row["code"] == "openai" for row in rows)
+
     def test_get_number(self, monkeypatch):
         provider = FiveSimProvider("token123", default_product="openai", default_country="england")
 

@@ -360,22 +360,98 @@ class FiveSimProvider(BaseSmsProvider):
             })
         return rows
 
-    def get_products(self, country: str | None = None) -> list[dict]:
+    def get_products(self, country: str | None = None, *, with_meta: bool = False) -> list[dict] | tuple[list[dict], dict]:
         country_slug = _resolve_fivesim_country(country or "", self.default_country)
-        operator = _fivesim_path_segment(self.default_operator)
+        operator_raw = self.default_operator or FIVESIM_DEFAULT_OPERATOR
+        operator = _fivesim_path_segment(operator_raw)
         path = f"/guest/products/{_fivesim_path_segment(country_slug)}/{operator}"
-        data = self._parse_json_response(self._request(path, auth=False), action="getProducts")
+        meta = {
+            "country": country_slug,
+            "operator": operator_raw,
+            "path": path,
+            "source": "guest_products",
+            "raw_keys": 0,
+            "filtered_hosting": 0,
+            "upstream_status": None,
+            "upstream_preview": "",
+        }
+
+        resp = self._request(path, auth=False)
+        meta["upstream_status"] = resp.status_code
+        meta["upstream_preview"] = str(resp.text or "")[:300]
+
         rows: list[dict] = []
-        for code, info in sorted(data.items()):
-            if not isinstance(info, dict):
+        try:
+            data = self._parse_json_response(resp, action="getProducts")
+            meta["raw_keys"] = len(data)
+            for code, info in sorted(data.items()):
+                if not isinstance(info, dict):
+                    continue
+                category = str(info.get("Category") or info.get("category") or "").lower()
+                if category == "hosting":
+                    meta["filtered_hosting"] += 1
+                    continue
+                rows.append({
+                    "code": code,
+                    "name": code,
+                    "qty": info.get("Qty") or info.get("qty") or 0,
+                    "price": info.get("Price") or info.get("price") or 0,
+                })
+        except Exception as exc:
+            logger.warning("5sim getProducts primary failed country=%s path=%s: %s", country_slug, path, exc)
+            meta["source"] = "guest_products_error"
+            meta["error"] = str(exc)
+
+        if not rows:
+            fallback_rows = self._products_from_prices(country_slug)
+            if fallback_rows:
+                logger.info(
+                    "5sim products fallback via guest/prices country=%s count=%s",
+                    country_slug,
+                    len(fallback_rows),
+                )
+                rows = fallback_rows
+                meta["source"] = "guest_prices_fallback"
+                meta["raw_keys"] = len(fallback_rows)
+
+        logger.info(
+            "5sim get_products country=%s operator=%s source=%s raw_keys=%s result_count=%s filtered_hosting=%s",
+            country_slug,
+            operator_raw,
+            meta["source"],
+            meta["raw_keys"],
+            len(rows),
+            meta["filtered_hosting"],
+        )
+        if with_meta:
+            return rows, meta
+        return rows
+
+    def _products_from_prices(self, country_slug: str) -> list[dict]:
+        """从 guest/prices 回退提取产品列表（products 接口无数据时使用）。"""
+        data = self.get_prices(country=country_slug)
+        country_data = data.get(country_slug) if isinstance(data, dict) else None
+        if not isinstance(country_data, dict):
+            return []
+        rows: list[dict] = []
+        for code, operators in sorted(country_data.items()):
+            if not isinstance(operators, dict):
                 continue
-            if str(info.get("Category") or "").lower() == "hosting":
-                continue
+            best_count = 0
+            best_price = 0.0
+            for operator_info in operators.values():
+                if not isinstance(operator_info, dict):
+                    continue
+                count = int(operator_info.get("count") or 0)
+                cost = float(operator_info.get("cost") or 0)
+                best_count = max(best_count, count)
+                if cost > 0 and (best_price <= 0 or cost < best_price):
+                    best_price = cost
             rows.append({
                 "code": code,
                 "name": code,
-                "qty": info.get("Qty") or info.get("qty") or 0,
-                "price": info.get("Price") or info.get("price") or 0,
+                "qty": best_count,
+                "price": best_price,
             })
         return rows
 
