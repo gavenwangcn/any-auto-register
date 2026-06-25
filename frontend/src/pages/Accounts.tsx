@@ -166,9 +166,37 @@ function buildActionParamDraft(action: any, acc: any) {
       draft[param.key] = `${emailPrefix}Development`
       return
     }
+    if (action?.id === 'export_token') {
+      if (param?.key === 'password') {
+        draft[param.key] = String(acc?.password || '')
+        return
+      }
+      if (param?.key === 're_login') {
+        draft[param.key] = 'true'
+        return
+      }
+      if (param?.key === 'executor_type') {
+        draft[param.key] = 'headless'
+        return
+      }
+    }
     draft[param?.key || ''] = ''
   })
   return draft
+}
+
+function downloadTokenExport(payload: any, email: string) {
+  const tokenExport = payload?.token_export || payload
+  if (!tokenExport || typeof tokenExport !== 'object') return
+  const blob = new Blob([JSON.stringify(tokenExport, null, 2)], { type: 'application/json' })
+  const url = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = `${email || tokenExport.email || 'account'}.json`
+  document.body.appendChild(anchor)
+  anchor.click()
+  anchor.remove()
+  URL.revokeObjectURL(url)
 }
 
 // ── 注册弹框 ────────────────────────────────────────────────
@@ -531,6 +559,168 @@ function AddModal({ platform, onClose, onDone }: { platform: string; onClose: ()
   )
 }
 
+function FetchTokenModal({ onClose }: { onClose: () => void }) {
+  const [form, setForm] = useState({
+    email: '',
+    password: '',
+    executor_type: 'headless',
+    mail_provider: '',
+    otp_code: '',
+  })
+  const [mailboxProviders, setMailboxProviders] = useState<string[]>([])
+  const [starting, setStarting] = useState(false)
+  const [taskId, setTaskId] = useState<string | null>(null)
+  const [done, setDone] = useState(false)
+  const set = (key: string, value: string) => setForm(current => ({ ...current, [key]: value }))
+
+  useEffect(() => {
+    getConfigOptions()
+      .then((options) => {
+        const providers = (options?.mailbox_providers || [])
+          .map((item: any) => String(item?.key || item?.provider_key || item?.name || '').trim())
+          .filter(Boolean)
+        setMailboxProviders(providers)
+        if (providers.length > 0) {
+          setForm(current => ({ ...current, mail_provider: current.mail_provider || providers[0] }))
+        }
+      })
+      .catch(() => {})
+  }, [])
+
+  const start = async () => {
+    const email = form.email.trim()
+    const password = form.password.trim()
+    if (!email || !password) {
+      alert('请填写账号邮箱和密码')
+      return
+    }
+    setStarting(true)
+    try {
+      const resp = await apiFetch('/tasks/fetch-token', {
+        method: 'POST',
+        body: JSON.stringify({
+          platform: 'chatgpt',
+          email,
+          password,
+          executor_type: form.executor_type,
+          mail_provider: form.mail_provider,
+          email_service: form.mail_provider,
+          otp_code: form.otp_code.trim(),
+        }),
+      })
+      setTaskId(resp.task_id || resp.id)
+    } catch (error: any) {
+      alert(error?.message || '启动失败')
+    } finally {
+      setStarting(false)
+    }
+  }
+
+  const handleDone = async (status: string) => {
+    setDone(status === 'succeeded')
+    if (status !== 'succeeded' || !taskId) return
+    try {
+      const task = await apiFetch(`/tasks/${taskId}`)
+      const data = task?.data ?? task?.result?.data
+      if (data?.token_export) {
+        downloadTokenExport(data.token_export, form.email.trim())
+      }
+    } catch {
+      // ignore download failures
+    }
+  }
+
+  return (
+    <div className="dialog-backdrop" onClick={onClose}>
+      <div
+        className="dialog-panel dialog-panel-md flex flex-col"
+        onClick={e => e.stopPropagation()}
+        style={{ maxHeight: '88vh' }}
+      >
+        <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--border)]">
+          <div>
+            <h2 className="text-base font-semibold text-[var(--text-primary)]">外部账号导出 Token</h2>
+            <p className="mt-0.5 text-xs text-[var(--text-muted)]">无需入库，填写手动注册的 ChatGPT 账号即可登录并导出 Token JSON</p>
+          </div>
+          <button onClick={onClose} className="text-[var(--text-muted)] hover:text-[var(--text-primary)]">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+        <div className="flex-1 overflow-y-auto px-6 py-4">
+          {!taskId ? (
+            <div className="space-y-3">
+              <div>
+                <label className="mb-1 block text-xs text-[var(--text-muted)]">账号邮箱</label>
+                <input
+                  type="email"
+                  value={form.email}
+                  onChange={e => set('email', e.target.value)}
+                  placeholder="手动注册时使用的邮箱"
+                  className="control-surface"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs text-[var(--text-muted)]">密码</label>
+                <input
+                  type="password"
+                  value={form.password}
+                  onChange={e => set('password', e.target.value)}
+                  placeholder="账号密码"
+                  className="control-surface"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs text-[var(--text-muted)]">浏览器模式</label>
+                <select
+                  value={form.executor_type}
+                  onChange={e => set('executor_type', e.target.value)}
+                  className="control-surface appearance-none"
+                >
+                  <option value="headless">无头模式（Docker 推荐）</option>
+                  <option value="headed">可视模式（需 noVNC）</option>
+                </select>
+              </div>
+              <div>
+                <label className="mb-1 block text-xs text-[var(--text-muted)]">邮箱接码 Provider（OAuth 需要验证码时）</label>
+                <select
+                  value={form.mail_provider}
+                  onChange={e => set('mail_provider', e.target.value)}
+                  className="control-surface appearance-none"
+                >
+                  <option value="">使用默认 Provider</option>
+                  {mailboxProviders.map(provider => (
+                    <option key={provider} value={provider}>{provider}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="mb-1 block text-xs text-[var(--text-muted)]">验证码（可选，已知 OTP 时可直接填写）</label>
+                <input
+                  type="text"
+                  value={form.otp_code}
+                  onChange={e => set('otp_code', e.target.value)}
+                  placeholder="留空则自动从邮箱 Provider 收码"
+                  className="control-surface"
+                />
+              </div>
+              <Button onClick={start} disabled={starting} className="w-full">
+                {starting ? '启动中...' : '登录并导出 Token'}
+              </Button>
+            </div>
+          ) : (
+            <TaskLogPanel taskId={taskId} onDone={handleDone} />
+          )}
+        </div>
+        <div className="flex justify-end border-t border-[var(--border)] px-6 py-3">
+          <Button variant="outline" size="sm" onClick={onClose}>
+            {done ? '关闭' : '取消'}
+          </Button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function formatResultValue(value: any) {
   if (value === null || value === undefined || value === '') return '-'
   if (typeof value === 'boolean') return value ? '是' : '否'
@@ -752,7 +942,10 @@ function ActionResultModal({
   payload: any
   onClose: () => void
 }) {
-  const content = typeof payload === 'string' ? payload : JSON.stringify(payload, null, 2)
+  const tokenExport = payload?.token_export
+  const content = typeof payload === 'string'
+    ? payload
+    : JSON.stringify(tokenExport || payload, null, 2)
 
   return (
     <div className="dialog-backdrop" onClick={onClose}>
@@ -766,6 +959,15 @@ function ActionResultModal({
             <p className="text-xs text-[var(--text-muted)] mt-0.5">操作结果</p>
           </div>
           <div className="flex items-center gap-2">
+            {tokenExport ? (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => downloadTokenExport(payload, tokenExport.email || '')}
+              >
+                下载 JSON
+              </Button>
+            ) : null}
             <Button variant="outline" size="sm" onClick={() => navigator.clipboard.writeText(content)}>
               <Copy className="h-4 w-4 mr-1" />
               复制
@@ -914,7 +1116,7 @@ function ActionParamsModal({
               <label key={param.key} className="block">
                 <div className="mb-1 text-xs text-[var(--text-muted)]">{param.label || param.key}</div>
                 <input
-                  type={param.type === 'number' ? 'number' : 'text'}
+                  type={param.type === 'number' ? 'number' : param.key === 'password' ? 'password' : 'text'}
                   value={value}
                   onChange={e => setForm(current => ({ ...current, [param.key]: e.target.value }))}
                   className="w-full rounded-xl border border-[var(--border)] bg-[var(--bg-hover)] px-3 py-2 text-sm outline-none focus:border-[var(--text-accent)]"
@@ -970,6 +1172,9 @@ function ActionMenu({
             return
           }
           onChanged()
+          if (resp.data?.token_export) {
+            downloadTokenExport(resp.data, acc.email)
+          }
           if (resp.data?.url || resp.data?.checkout_url || resp.data?.cashier_url) {
             const actionUrl = resp.data?.url || resp.data?.checkout_url || resp.data?.cashier_url
             window.open(actionUrl, '_blank')
@@ -1086,6 +1291,12 @@ function ActionMenu({
         }
       }
       if (data && typeof data === 'object') {
+        if (data.token_export && typeof data.token_export === 'object') {
+          downloadTokenExport(data.token_export, acc.email)
+          setToast({ type: 'success', text: data.message || 'Token 已导出并下载' })
+          onChanged()
+          return
+        }
         if (actionUrl) {
           setToast({ type: 'success', text: data.message || '支付链接已在新标签打开，链接已复制' })
           return
@@ -1522,6 +1733,7 @@ export default function Accounts() {
   const [detail, setDetail] = useState<any | null>(null)
   const [showImport, setShowImport] = useState(false)
   const [showAdd, setShowAdd] = useState(false)
+  const [showFetchToken, setShowFetchToken] = useState(false)
   const [showRegister, setShowRegister] = useState(false)
   const [platformsMap, setPlatformsMap] = useState<Record<string, any>>({})
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
@@ -1628,6 +1840,9 @@ export default function Accounts() {
       {detail && <DetailModal acc={detail} onClose={() => setDetail(null)} onSave={() => { setDetail(null); load() }} />}
       {showImport && <ImportModal platform={tab} onClose={() => setShowImport(false)} onDone={() => { setShowImport(false); load() }} />}
       {showAdd && <AddModal platform={tab} onClose={() => setShowAdd(false)} onDone={() => { setShowAdd(false); load() }} />}
+      {showFetchToken && tab === 'chatgpt' && (
+        <FetchTokenModal onClose={() => setShowFetchToken(false)} />
+      )}
       {showRegister && <RegisterModal platform={tab} platformMeta={platformsMap[tab]} onClose={() => setShowRegister(false)} onDone={() => load()} />}
       {actionResult && <ActionResultModal title={actionResult.title} payload={actionResult.payload} onClose={() => setActionResult(null)} />}
       {batchTask && (
@@ -1676,13 +1891,19 @@ export default function Accounts() {
               导入
             </Button>
             {tab === 'chatgpt' ? (
-              <ExportMenu
-                platform={tab}
-                total={total}
-                statusFilter={filterStatus}
-                searchFilter={debouncedSearch}
-                selectedIds={[...selectedIds]}
-              />
+              <>
+                <Button size="sm" variant="outline" onClick={() => setShowFetchToken(true)} className="h-8 bg-transparent">
+                  <Download className="mr-1.5 h-3.5 w-3.5" />
+                  导出 Token
+                </Button>
+                <ExportMenu
+                  platform={tab}
+                  total={total}
+                  statusFilter={filterStatus}
+                  searchFilter={debouncedSearch}
+                  selectedIds={[...selectedIds]}
+                />
+              </>
             ) : (
               <Button size="sm" variant="outline" onClick={exportCsv} disabled={accounts.length === 0} className="h-8 bg-transparent">
                 <Download className="mr-1.5 h-3.5 w-3.5" />

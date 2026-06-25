@@ -9,6 +9,7 @@ from application.tasks import (
     TASK_STATUS_FAILED,
     TASK_STATUS_INTERRUPTED,
     TERMINAL_TASK_STATUSES,
+    create_fetch_token_task,
     create_register_task,
     get_task,
     list_task_events,
@@ -20,6 +21,11 @@ from services.task_runtime import task_runtime
 class TaskCommandsService:
     def create_register_task(self, payload: dict) -> dict:
         task = create_register_task(payload)
+        task_runtime.wake_up()
+        return task
+
+    def create_fetch_token_task(self, payload: dict) -> dict:
+        task = create_fetch_token_task(payload)
         task_runtime.wake_up()
         return task
 

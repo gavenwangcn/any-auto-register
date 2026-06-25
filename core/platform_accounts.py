@@ -109,4 +109,5 @@ def build_platform_account(session: Session, model: AccountModel) -> PlatformAcc
         status=status,
         trial_end_time=int(_overview_value(graph, "trial_end_time", 0) or 0),
         extra=build_platform_extra(model, graph),
+        created_at=int(model.created_at.timestamp()) if getattr(model, "created_at", None) else 0,
     )

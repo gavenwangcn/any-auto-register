@@ -27,6 +27,7 @@ TASK_TYPE_REGISTER = "register"
 TASK_TYPE_ACCOUNT_CHECK = "account_check"
 TASK_TYPE_ACCOUNT_CHECK_ALL = "account_check_all"
 TASK_TYPE_PLATFORM_ACTION = "platform_action"
+TASK_TYPE_FETCH_TOKEN = "fetch_token"
 
 TASK_STATUS_PENDING = "pending"
 TASK_STATUS_CLAIMED = "claimed"
@@ -234,6 +235,15 @@ def create_account_check_all_task(platform: str = "", limit: int = 50) -> dict[s
 def create_platform_action_task(payload: dict[str, Any]) -> dict[str, Any]:
     return create_task(
         task_type=TASK_TYPE_PLATFORM_ACTION,
+        platform=str(payload.get("platform", "")),
+        payload=payload,
+        progress_total=1,
+    )
+
+
+def create_fetch_token_task(payload: dict[str, Any]) -> dict[str, Any]:
+    return create_task(
+        task_type=TASK_TYPE_FETCH_TOKEN,
         platform=str(payload.get("platform", "")),
         payload=payload,
         progress_total=1,
@@ -587,6 +597,7 @@ def execute_task(task_id: str) -> None:
         TASK_TYPE_ACCOUNT_CHECK: _execute_account_check_task,
         TASK_TYPE_ACCOUNT_CHECK_ALL: _execute_account_check_all_task,
         TASK_TYPE_PLATFORM_ACTION: _execute_platform_action_task,
+        TASK_TYPE_FETCH_TOKEN: _execute_fetch_token_task,
     }
     handler = handlers.get(task_type)
     if not handler:
@@ -867,6 +878,63 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
     final_status = TASK_STATUS_FAILED if errors and success == 0 else TASK_STATUS_SUCCEEDED
     final_error = "" if final_status == TASK_STATUS_SUCCEEDED else errors[0]
     logger.finish(final_status, error=final_error)
+
+
+def _execute_fetch_token_task(payload: dict[str, Any], logger: TaskLogger) -> None:
+    platform_name = str(payload.get("platform", "")).strip()
+    if platform_name != "chatgpt":
+        logger.finish(TASK_STATUS_FAILED, error="当前仅支持 ChatGPT 外部账号导出 Token")
+        return
+
+    email = str(payload.get("email") or "").strip()
+    password = str(payload.get("password") or "").strip()
+    if not email or not password:
+        logger.finish(TASK_STATUS_FAILED, error="请填写账号邮箱和密码")
+        return
+
+    executor_type = str(payload.get("executor_type") or "headless").strip().lower()
+    headless = executor_type != "headed"
+    proxy = str(payload.get("proxy") or "").strip() or None
+
+    logger.log(f"开始为外部账号 {email} 登录并导出 Token...")
+    try:
+        from platforms.chatgpt.token_fetch import fetch_external_token_export
+
+        export_payload = fetch_external_token_export(
+            email,
+            password,
+            proxy=proxy,
+            headless=headless,
+            otp_code=str(payload.get("otp_code") or ""),
+            mail_provider=str(payload.get("mail_provider") or ""),
+            email_service=str(payload.get("email_service") or payload.get("mail_provider") or ""),
+            log_fn=logger.log,
+        )
+    except Exception as exc:
+        logger.record_error(str(exc))
+        logger.finish(TASK_STATUS_FAILED, error=str(exc))
+        return
+
+    result_data = {
+        "message": "Token 导出成功",
+        "token_export": export_payload,
+        **{
+            key: export_payload.get(key, "")
+            for key in (
+                "access_token",
+                "refresh_token",
+                "id_token",
+                "session_token",
+                "account_id",
+                "client_id",
+                "workspace_id",
+            )
+        },
+    }
+    logger.set_result_data(result_data)
+    logger.log("Token 导出完成", event_type="summary")
+    logger.set_progress(1, 1)
+    logger.finish(TASK_STATUS_SUCCEEDED)
 
 
 def _execute_platform_action_task(payload: dict[str, Any], logger: TaskLogger) -> None:

@@ -26,9 +26,29 @@ class RegisterTaskRequest(BaseModel):
     extra: dict = Field(default_factory=dict)
 
 
+class FetchTokenTaskRequest(BaseModel):
+    platform: str = "chatgpt"
+    email: str
+    password: str
+    executor_type: str = "headless"
+    mail_provider: str = ""
+    email_service: str = ""
+    otp_code: str = ""
+    proxy: Optional[str] = None
+
+
 @router.post("/register")
 def create_register_task(body: RegisterTaskRequest):
     return command_service.create_register_task(body.model_dump())
+
+
+@router.post("/fetch-token")
+def create_fetch_token_task(body: FetchTokenTaskRequest):
+    email = str(body.email or "").strip()
+    password = str(body.password or "").strip()
+    if not email or not password:
+        raise HTTPException(400, "请填写账号邮箱和密码")
+    return command_service.create_fetch_token_task(body.model_dump())
 
 
 @router.post("/{task_id}/cancel")

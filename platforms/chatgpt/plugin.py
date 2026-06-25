@@ -59,6 +59,7 @@ class ChatGPTPlatform(BasePlatform):
     capabilities = [
         "query_state",      # Query account state/quota
         "refresh_token",    # Refresh auth token
+        "export_token",     # Re-login and export OAuth tokens
         "generate_link",    # Generate payment link
         "switch_desktop",   # Switch to Codex desktop
         "upload_cpa",       # Upload to CPA system
@@ -230,6 +231,26 @@ class ChatGPTPlatform(BasePlatform):
             {"id": "switch_account", "label": "切换到 Codex 桌面端", "params": []},
             {"id": "get_account_state", "label": "查询账号状态/订阅", "params": []},
             {"id": "refresh_token", "label": "刷新 Token", "params": []},
+            {
+                "id": "export_token",
+                "label": "导出 Token",
+                "sync": False,
+                "params": [
+                    {"key": "password", "label": "密码（留空则用库中密码）", "type": "text"},
+                    {
+                        "key": "re_login",
+                        "label": "重新登录获取",
+                        "type": "select",
+                        "options": ["true", "false"],
+                    },
+                    {
+                        "key": "executor_type",
+                        "label": "浏览器模式",
+                        "type": "select",
+                        "options": ["headless", "headed"],
+                    },
+                ],
+            },
             {"id": "payment_link", "label": "生成支付链接",
              "params": [
                  {"key": "country", "label": "地区", "type": "select",
@@ -333,7 +354,87 @@ class ChatGPTPlatform(BasePlatform):
                                              api_key=params.get("api_key"))
             return {"ok": ok, "data": msg}
 
+        if action_id == "export_token":
+            return self._handle_export_token(account, params)
+
         raise NotImplementedError(f"Unknown action: {action_id}")
+
+    def _handle_export_token(self, account: Account, params: dict) -> dict:
+        from platforms.chatgpt.token_fetch import (
+            build_token_export_payload,
+            fetch_tokens_via_login,
+            resolve_otp_callback,
+        )
+
+        password = str(params.get("password") or account.password or "").strip()
+        if not password:
+            return {"ok": False, "error": "请填写账号密码"}
+
+        re_login = str(params.get("re_login", "true")).strip().lower() != "false"
+        executor_type = str(params.get("executor_type") or "headless").strip().lower()
+        headless = executor_type != "headed"
+        proxy = self.config.proxy if self.config else None
+        log_fn = getattr(self, "_log_fn", print)
+
+        token_overrides: dict = {}
+        if re_login:
+            log_fn(f"开始为 {account.email} 重新登录获取 Token...")
+            otp_callback = resolve_otp_callback(
+                email=account.email,
+                account=account,
+                otp_code=str(params.get("otp_code") or ""),
+                mail_provider=str(params.get("mail_provider") or ""),
+                log_fn=log_fn,
+            )
+            fetched = fetch_tokens_via_login(
+                account.email,
+                password,
+                proxy=proxy,
+                headless=headless,
+                otp_callback=otp_callback,
+                phone_callback=None,
+                log_fn=log_fn,
+            )
+            if not fetched:
+                log_fn("重新登录未获取到 Token，将回退使用库中已有凭证")
+            else:
+                token_overrides = {
+                    "access_token": fetched.get("access_token", ""),
+                    "refresh_token": fetched.get("refresh_token", ""),
+                    "id_token": fetched.get("id_token", ""),
+                    "account_id": fetched.get("account_id", ""),
+                }
+
+        export_payload = build_token_export_payload(
+            account,
+            password=password,
+            token_overrides=token_overrides,
+        )
+        if not any(
+            export_payload.get(key)
+            for key in ("access_token", "refresh_token", "id_token", "session_token")
+        ):
+            return {"ok": False, "error": "未能获取任何 Token，请确认密码正确且邮箱可收验证码"}
+
+        data = {
+            "message": "Token 导出成功",
+            "token_export": export_payload,
+            **{
+                key: export_payload.get(key, "")
+                for key in (
+                    "access_token",
+                    "refresh_token",
+                    "id_token",
+                    "session_token",
+                    "account_id",
+                    "client_id",
+                    "workspace_id",
+                )
+            },
+        }
+        if token_overrides.get("account_id"):
+            data["account_id"] = token_overrides["account_id"]
+        return {"ok": True, "data": data}
 
     # Override specific capability handlers
     def _handle_query_state(self, account: Account, params: dict) -> dict:
